@@ -1,0 +1,14 @@
+{
+  "name": "edge-dfs-loader",
+  "version": "1.0.0",
+  "description": "EDGE DFS daily data loader - fetches Statcast data and stores in Supabase",
+  "type": "module",
+  "scripts": {
+    "hitters": "node scripts/hitter-loader.js",
+    "pitchers": "node scripts/pitcher-loader.js",
+    "clear": "node scripts/clear-hitters.js"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}
