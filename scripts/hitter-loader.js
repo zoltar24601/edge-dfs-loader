@@ -128,7 +128,7 @@ async function fetchCSV(playerId, season) {
 }
 
 async function main() {
-  console.log('âš¾ EDGE DFS HITTER LOADER â€” Node.js');
+  console.log('⚾ EDGE DFS HITTER LOADER — Node.js');
   console.log('Date:', today);
 
   // 1. Schedule
@@ -168,19 +168,21 @@ async function main() {
   for (let i = 0; i < hitters.length; i++) {
     const h = hitters[i];
     try {
-      const csv2025 = await fetchCSV(h.id, 2025);
-      const rows2025 = parseCSV(csv2025);
-      if (!rows2025 || rows2025.length < 20) { skipped++; console.log((i+1) + '/' + hitters.length, h.name, 'â€” skipped'); continue; }
+      const csvAll = await fetchCSV(h.id, '2025%7C2026');
+      const rowsAll = parseCSV(csvAll);
+      if (!rowsAll || rowsAll.length < 20) { skipped++; console.log((i+1) + '/' + hitters.length, h.name, '— skipped'); continue; }
 
       const csv2026 = await fetchCSV(h.id, 2026);
       const rows2026 = parseCSV(csv2026);
 
-      const splitsR = computeSplits(rows2025, 'R');
-      const splitsL = computeSplits(rows2025, 'L');
+      // Splits use combined 2025+2026 data (bigger sample + current season)
+      const splitsR = computeSplits(rowsAll, 'R');
+      const splitsL = computeSplits(rowsAll, 'L');
 
+      // Hot streak uses 2026 only (current season), fallback to last 14 days of all data
       let streak, streakSrc;
       if (rows2026 && rows2026.length >= 20) { streak = computeStreak(rows2026, 14); streakSrc = '2026'; }
-      else { streak = computeStreak(rows2025, 14); streakSrc = '2025'; }
+      else { streak = computeStreak(rowsAll, 14); streakSrc = 'all'; }
       const hot = calcHot(streak);
 
       if (splitsR && Object.keys(splitsR).length > 0) {
@@ -212,14 +214,14 @@ async function main() {
       }
 
       saved++;
-      console.log((i+1) + '/' + hitters.length, h.name, 'âœ“ vsR:' + Object.keys(splitsR).length, 'vsL:' + Object.keys(splitsL).length, 'hot:' + hot.score, '[' + streakSrc + ']');
+      console.log((i+1) + '/' + hitters.length, h.name, '✓ vsR:' + Object.keys(splitsR).length, 'vsL:' + Object.keys(splitsL).length, 'hot:' + hot.score, '[' + streakSrc + ']');
 
       if (i % 3 === 2) await sleep(1200);
       else await sleep(500);
 
     } catch(e) {
       errors++;
-      console.log((i+1) + '/' + hitters.length, h.name, 'âœ—', e.message?.substring(0, 80));
+      console.log((i+1) + '/' + hitters.length, h.name, '✗', e.message?.substring(0, 80));
     }
   }
 
