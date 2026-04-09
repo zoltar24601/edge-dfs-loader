@@ -111,7 +111,7 @@ async function main() {
   for (let i = 0; i < pitchers.length; i++) {
     const p = pitchers[i];
     try {
-      const csv = await fetchCSV(p.id, 2025);
+      const csv = await fetchCSV(p.id, '2025%7C2026');
       const rows = parseCSV(csv);
       if (!rows || rows.length < 100) { console.log((i+1) + '/' + pitchers.length, p.name, 'â€” skipped'); continue; }
 
