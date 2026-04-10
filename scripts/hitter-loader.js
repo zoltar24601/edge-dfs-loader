@@ -213,6 +213,16 @@ async function main() {
         });
       }
 
+      // Log hot score + all components to history table for trend tracking
+      await sbUpsert('edge_hot_history', {
+        player_id: h.id, player_name: h.name, game_date: today, hot_score: hot.score,
+        hard_hit_pct: streak?.hardHitPct || null, xwoba: streak?.xwoba || null,
+        bb_pct: streak?.bbPct || null, k_pct: streak?.kPct || null,
+        barrel_pct: streak?.barrelPct || null, avg_ev: streak?.avgEV || null,
+        ld_pct: streak?.ldPct || null, chase_pct: streak?.chasePct || null,
+        whiff_pct: streak?.whiffPct || null, contact_pct: streak?.contactPct || null,
+        n_pa: streak?.nPA || 0,
+      });
       saved++;
       console.log((i+1) + '/' + hitters.length, h.name, '✓ vsR:' + Object.keys(splitsR).length, 'vsL:' + Object.keys(splitsL).length, 'hot:' + hot.score, '[' + streakSrc + ']');
 
