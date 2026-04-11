@@ -64,6 +64,7 @@ function computeSplits(rows,hand){
       woba:wb.length?r3(avg(wb)):null,xba:xb.length?r3(avg(xb)):null,
       hardHitPct:ipWithEV.length?r1(hh.length/ipWithEV.length*100):0,
       ldPct:ipWithEV.length?r1(ld.length/ipWithEV.length*100):0,
+      whiffPct:sw.length?r1(wh.length/sw.length*100):0,
       avgEV:ev.length?r1(avg(ev)):0};
   });
   return res;
@@ -81,10 +82,11 @@ function computeStreak(rows,days){
   if(nPA<5)return{nPA};
   const wk=recent.filter(r=>r.events==='walk'),ks=recent.filter(r=>r.events==='strikeout');
   const bip=recent.filter(r=>r.type==='X');
-  const hh=bip.filter(r=>parseFloat(r.launch_speed)>=95);
-  const br=bip.filter(r=>{const e=parseFloat(r.launch_speed),a=parseFloat(r.launch_angle);return e>=98&&a>=26&&a<=30;});
-  const ld=bip.filter(r=>{const a=parseFloat(r.launch_angle);return a>=10&&a<=25;});
-  const ev=bip.map(r=>parseFloat(r.launch_speed)).filter(v=>!isNaN(v));
+  const bipEV=bip.filter(r=>!isNaN(parseFloat(r.launch_speed)));
+  const hh=bipEV.filter(r=>parseFloat(r.launch_speed)>=95);
+  const br=bipEV.filter(r=>{const e=parseFloat(r.launch_speed),a=parseFloat(r.launch_angle);return e>=98&&a>=26&&a<=30;});
+  const ld=bipEV.filter(r=>{const a=parseFloat(r.launch_angle);return !isNaN(a)&&a>=10&&a<=25;});
+  const ev=bipEV.map(r=>parseFloat(r.launch_speed));
   const wb=recent.map(r=>parseFloat(r.estimated_woba_using_speedangle)).filter(v=>!isNaN(v));
   const xb=recent.map(r=>parseFloat(r.estimated_ba_using_speedangle)).filter(v=>!isNaN(v));
   const sw=recent.filter(r=>['swinging_strike','swinging_strike_blocked','foul','hit_into_play','foul_tip'].includes(r.description));
@@ -93,9 +95,9 @@ function computeStreak(rows,days){
   const oz=recent.filter(r=>['11','12','13','14'].includes(r.zone));
   const ch=oz.filter(r=>['swinging_strike','swinging_strike_blocked','foul','hit_into_play'].includes(r.description));
   return{nPA,bbPct:r1(wk.length/nPA*100),kPct:r1(ks.length/nPA*100),
-    hardHitPct:r1(bip.length?hh.length/bip.length*100:0),
-    barrelPct:r1(bip.length?br.length/bip.length*100:0),
-    ldPct:r1(bip.length?ld.length/bip.length*100:0),
+    hardHitPct:r1(bipEV.length?hh.length/bipEV.length*100:0),
+    barrelPct:r1(bipEV.length?br.length/bipEV.length*100:0),
+    ldPct:r1(bipEV.length?ld.length/bipEV.length*100:0),
     avgEV:r1(ev.length?avg(ev):0),
     xwoba:wb.length?r3(avg(wb)):null,xba:xb.length?r3(avg(xb)):null,
     contactPct:r1(sw.length?ct.length/sw.length*100:0),
@@ -223,6 +225,7 @@ async function main() {
         whiff_pct: streak?.whiffPct || null, contact_pct: streak?.contactPct || null,
         n_pa: streak?.nPA || 0,
       });
+
       saved++;
       console.log((i+1) + '/' + hitters.length, h.name, '✓ vsR:' + Object.keys(splitsR).length, 'vsL:' + Object.keys(splitsL).length, 'hot:' + hot.score, '[' + streakSrc + ']');
 
