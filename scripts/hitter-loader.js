@@ -52,18 +52,18 @@ function computeSplits(rows,hand){
   Object.entries(byP).forEach(([pt,p])=>{
     if(p.length<10)return;
     const ip=p.filter(x=>x.type==='X');
+    const ipWithEV=ip.filter(x=>!isNaN(parseFloat(x.launch_speed)));
     const sw=p.filter(x=>['swinging_strike','swinging_strike_blocked','foul','hit_into_play','foul_tip'].includes(x.description));
     const wh=p.filter(x=>['swinging_strike','swinging_strike_blocked'].includes(x.description));
-    const ev=ip.map(x=>parseFloat(x.launch_speed)).filter(v=>!isNaN(v));
+    const ev=ipWithEV.map(x=>parseFloat(x.launch_speed));
     const wb=p.map(x=>parseFloat(x.estimated_woba_using_speedangle)).filter(v=>!isNaN(v));
     const xb=p.map(x=>parseFloat(x.estimated_ba_using_speedangle)).filter(v=>!isNaN(v));
-    const hh=ip.filter(x=>parseFloat(x.launch_speed)>=95);
-    const ld=ip.filter(x=>{const a=parseFloat(x.launch_angle);return a>=10&&a<=25;});
+    const hh=ipWithEV.filter(x=>parseFloat(x.launch_speed)>=95);
+    const ld=ipWithEV.filter(x=>{const a=parseFloat(x.launch_angle);return a>=10&&a<=25;});
     res[pt]={label:L[pt]||pt,n:p.length,
       woba:wb.length?r3(avg(wb)):null,xba:xb.length?r3(avg(xb)):null,
-      hardHitPct:ip.length?r1(hh.length/ip.length*100):0,
-      ldPct:ip.length?r1(ld.length/ip.length*100):0,
-      whiffPct:sw.length?r1(wh.length/sw.length*100):0,
+      hardHitPct:ipWithEV.length?r1(hh.length/ipWithEV.length*100):0,
+      ldPct:ipWithEV.length?r1(ld.length/ipWithEV.length*100):0,
       avgEV:ev.length?r1(avg(ev)):0};
   });
   return res;
