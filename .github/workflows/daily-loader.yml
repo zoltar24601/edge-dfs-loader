@@ -2,8 +2,8 @@ name: EDGE DFS Daily Loader
 
 on:
   schedule:
-    - cron: '0 6 * * *'    # Daily at 6AM UTC (~2AM EDT)
-  workflow_dispatch:         # Manual trigger
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 jobs:
   load-data:
@@ -15,40 +15,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Node.js for hitter/pitcher Statcast loaders
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
       - run: npm install node-fetch
 
-      # Python for FanGraphs loader
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: pip install pybaseball pandas
+      - name: Backfill results
+        run: node scripts/results-backfill.js
 
-      # Run hitter loader (daily)
       - name: Load hitter data
         run: node scripts/hitter-loader.js
 
-      # Run pitcher loader (Sundays only)
       - name: Load pitcher data
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && contains('0', github.event.schedule))
         run: |
           DAY=$(date -u +%u)
           if [ "$DAY" = "7" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             node scripts/pitcher-loader.js
           else
             echo "Skipping pitcher loader (not Sunday)"
-          fi
-
-      # Run FanGraphs loader (Sundays only, or manual)
-      - name: Load FanGraphs data
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && contains('0', github.event.schedule))
-        run: |
-          DAY=$(date -u +%u)
-          if [ "$DAY" = "7" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            python scripts/fangraphs-loader.py
-          else
-            echo "Skipping FanGraphs loader (not Sunday)"
           fi
