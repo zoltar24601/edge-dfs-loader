@@ -41,6 +41,41 @@ function parseCSV(text){
 
 const LABELS = {FF:'4-Seam FB',SI:'Sinker',FC:'Cutter',FA:'Fastball',SL:'Slider',CU:'Curveball',KC:'Knuckle-Curve',CS:'Slow Curve',CH:'Changeup',FS:'Splitter',ST:'Sweeper',SV:'Slurve',SW:'Sweeper'};
 
+function computeResultsByHand(rows, batterHand) {
+  if (!rows || !rows.length) return null;
+  const filtered = batterHand ? rows.filter(r => r.stand === batterHand) : rows;
+  if (filtered.length < 50) return null;
+
+  // PA events
+  const paEvents = ['single','double','triple','home_run','field_out','strikeout','walk','hit_by_pitch','grounded_into_double_play','sac_fly','force_out','fielders_choice','fielders_choice_out'];
+  const pas = filtered.filter(r => paEvents.includes(r.events));
+  const nPA = pas.length;
+  if (nPA < 20) return null;
+
+  // xwOBA allowed
+  const xwVals = filtered.map(r => parseFloat(r.estimated_woba_using_speedangle)).filter(v => !isNaN(v));
+  const xwoba = xwVals.length ? r3(avg(xwVals)) : null;
+
+  // K% and BB%
+  const ks = pas.filter(r => r.events === 'strikeout').length;
+  const bbs = pas.filter(r => r.events === 'walk').length;
+  const kPct = r1(ks / nPA * 100);
+  const bbPct = r1(bbs / nPA * 100);
+
+  // Hard Hit % allowed
+  const bip = filtered.filter(r => r.type === 'X');
+  const bipEV = bip.filter(r => !isNaN(parseFloat(r.launch_speed)));
+  const hh = bipEV.filter(r => parseFloat(r.launch_speed) >= 95);
+  const hardHitPct = bipEV.length ? r1(hh.length / bipEV.length * 100) : null;
+
+  // Whiff %
+  const swings = filtered.filter(r => ['swinging_strike','swinging_strike_blocked','foul','hit_into_play','foul_tip'].includes(r.description));
+  const whiffs = filtered.filter(r => ['swinging_strike','swinging_strike_blocked'].includes(r.description));
+  const whiffPct = swings.length ? r1(whiffs.length / swings.length * 100) : null;
+
+  return { xwoba, kPct, bbPct, hardHitPct, whiffPct, nPA };
+}
+
 function computeArsenalByHand(rows, batterHand) {
   if (!rows || !rows.length) return null;
   const filtered = batterHand ? rows.filter(r => r.stand === batterHand) : rows;
@@ -86,7 +121,7 @@ async function fetchCSV(pitcherId, season) {
 }
 
 async function main() {
-  console.log('âš¾ EDGE DFS PITCHER LOADER â€” Node.js');
+  console.log('⚾ EDGE DFS PITCHER LOADER — Node.js');
 
   console.log('Fetching all team rosters...');
   const teamsRes = await fetch(MLB + '/teams?sportId=1');
@@ -113,12 +148,16 @@ async function main() {
     try {
       const csv = await fetchCSV(p.id, '2025%7C2026');
       const rows = parseCSV(csv);
-      if (!rows || rows.length < 100) { console.log((i+1) + '/' + pitchers.length, p.name, 'â€” skipped'); continue; }
+      if (!rows || rows.length < 100) { console.log((i+1) + '/' + pitchers.length, p.name, '— skipped'); continue; }
 
       const arsenalAll = computeArsenalByHand(rows, null);
       const arsenalVsR = computeArsenalByHand(rows, 'R');
       const arsenalVsL = computeArsenalByHand(rows, 'L');
-      if (!arsenalAll) { console.log((i+1) + '/' + pitchers.length, p.name, 'â€” not enough data'); continue; }
+      if (!arsenalAll) { console.log((i+1) + '/' + pitchers.length, p.name, '— not enough data'); continue; }
+
+      // Compute results by batter hand
+      const resultsVsR = computeResultsByHand(rows, 'R');
+      const resultsVsL = computeResultsByHand(rows, 'L');
 
       let era = null, whip = null, kPer9 = null, bbPer9 = null, ip = null;
       try {
@@ -132,6 +171,18 @@ async function main() {
         pitcher_id: p.id, pitcher_name: p.name, team: p.team, hand: p.hand, season: 2025,
         arsenal: arsenalAll, arsenal_vs_r: arsenalVsR, arsenal_vs_l: arsenalVsL,
         era, whip, k_per_9: kPer9, bb_per_9: bbPer9, ip,
+        xwoba_vs_r: resultsVsR?.xwoba || null,
+        xwoba_vs_l: resultsVsL?.xwoba || null,
+        k_pct_vs_r: resultsVsR?.kPct || null,
+        k_pct_vs_l: resultsVsL?.kPct || null,
+        bb_pct_vs_r: resultsVsR?.bbPct || null,
+        bb_pct_vs_l: resultsVsL?.bbPct || null,
+        hard_hit_pct_vs_r: resultsVsR?.hardHitPct || null,
+        hard_hit_pct_vs_l: resultsVsL?.hardHitPct || null,
+        whiff_pct_vs_r: resultsVsR?.whiffPct || null,
+        whiff_pct_vs_l: resultsVsL?.whiffPct || null,
+        n_pa_vs_r: resultsVsR?.nPA || null,
+        n_pa_vs_l: resultsVsL?.nPA || null,
         game_date: new Date().toISOString().split('T')[0],
         updated_at: new Date().toISOString(),
       });
@@ -139,14 +190,16 @@ async function main() {
       saved++;
       const topR = arsenalVsR ? Object.entries(arsenalVsR).sort((a,b)=>b[1].usage-a[1].usage).slice(0,2).map(([pt,d])=>d.label+' '+Math.round(d.usage*100)+'%').join(', ') : 'N/A';
       const topL = arsenalVsL ? Object.entries(arsenalVsL).sort((a,b)=>b[1].usage-a[1].usage).slice(0,2).map(([pt,d])=>d.label+' '+Math.round(d.usage*100)+'%').join(', ') : 'N/A';
-      console.log((i+1) + '/' + pitchers.length, p.name, '(' + p.team + ' ' + p.hand + 'HP) âœ“ vsR:', topR, '| vsL:', topL);
+      const splitR = resultsVsR ? 'xwOBA:'+resultsVsR.xwoba+' K:'+resultsVsR.kPct+'%' : 'N/A';
+      const splitL = resultsVsL ? 'xwOBA:'+resultsVsL.xwoba+' K:'+resultsVsL.kPct+'%' : 'N/A';
+      console.log((i+1) + '/' + pitchers.length, p.name, '(' + p.team + ' ' + p.hand + 'HP) ✓ vsR:', splitR, '| vsL:', splitL);
 
       if (i % 3 === 2) await sleep(1000);
       else await sleep(400);
 
     } catch(e) {
       errors++;
-      console.log((i+1) + '/' + pitchers.length, p.name, 'âœ—', e.message?.substring(0, 80));
+      console.log((i+1) + '/' + pitchers.length, p.name, '✗', e.message?.substring(0, 80));
     }
   }
 
