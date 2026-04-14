@@ -5,8 +5,9 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const MLB = 'https://statsapi.mlb.com/api/v1';
 let saved = 0, errors = 0;
 
-async function sbUpsert(table, data) {
-  const res = await fetch(SUPABASE_URL + '/rest/v1/' + table, {
+async function sbUpsert(table, data, conflictCols) {
+  const conflict = conflictCols ? '?on_conflict=' + conflictCols : '';
+  const res = await fetch(SUPABASE_URL + '/rest/v1/' + table + conflict, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_KEY, 'apikey': SUPABASE_KEY, 'Prefer': 'resolution=merge-duplicates' },
     body: JSON.stringify(data)
@@ -185,7 +186,7 @@ async function main() {
         n_pa_vs_l: resultsVsL?.nPA || null,
         game_date: new Date().toISOString().split('T')[0],
         updated_at: new Date().toISOString(),
-      });
+      }, 'pitcher_id,season');
 
       saved++;
       const topR = arsenalVsR ? Object.entries(arsenalVsR).sort((a,b)=>b[1].usage-a[1].usage).slice(0,2).map(([pt,d])=>d.label+' '+Math.round(d.usage*100)+'%').join(', ') : 'N/A';
