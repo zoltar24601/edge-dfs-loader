@@ -6,8 +6,9 @@ const MLB = 'https://statsapi.mlb.com/api/v1';
 const today = new Date().toISOString().split('T')[0];
 let saved = 0, errors = 0, skipped = 0;
 
-async function sbUpsert(table, data) {
-  const res = await fetch(SUPABASE_URL + '/rest/v1/' + table, {
+async function sbUpsert(table, data, conflictCols) {
+  const conflict = conflictCols ? '?on_conflict=' + conflictCols : '';
+  const res = await fetch(SUPABASE_URL + '/rest/v1/' + table + conflict, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_KEY, 'apikey': SUPABASE_KEY, 'Prefer': 'resolution=merge-duplicates' },
     body: JSON.stringify(data)
@@ -198,7 +199,7 @@ async function main() {
           ld_pct: streak?.ldPct || null, avg_ev: streak?.avgEV || null,
           contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
           whiff_pct: streak?.whiffPct || null, updated_at: new Date().toISOString()
-        });
+        }, 'player_id,pitcher_hand,season');
       }
 
       if (splitsL && Object.keys(splitsL).length > 0) {
@@ -212,7 +213,7 @@ async function main() {
           ld_pct: streak?.ldPct || null, avg_ev: streak?.avgEV || null,
           contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
           whiff_pct: streak?.whiffPct || null, updated_at: new Date().toISOString()
-        });
+        }, 'player_id,pitcher_hand,season');
       }
 
       // Log hot score + all components to history table for trend tracking
@@ -224,7 +225,7 @@ async function main() {
         ld_pct: streak?.ldPct || null, chase_pct: streak?.chasePct || null,
         whiff_pct: streak?.whiffPct || null, contact_pct: streak?.contactPct || null,
         n_pa: streak?.nPA || 0,
-      });
+      }, 'player_id,game_date');
 
       saved++;
       console.log((i+1) + '/' + hitters.length, h.name, '✓ vsR:' + Object.keys(splitsR).length, 'vsL:' + Object.keys(splitsL).length, 'hot:' + hot.score, '[' + streakSrc + ']');
