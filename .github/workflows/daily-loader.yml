@@ -8,11 +8,10 @@ on:
 jobs:
   load-data:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      EVENT_NAME: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -28,10 +27,4 @@ jobs:
         run: node scripts/hitter-loader.js
 
       - name: Load pitcher data
-        run: |
-          DAY=$(date -u +%u)
-          if [ "$DAY" = "7" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            node scripts/pitcher-loader.js
-          else
-            echo "Skipping pitcher loader (not Sunday)"
-          fi
+        run: node scripts/pitcher-loader.js
