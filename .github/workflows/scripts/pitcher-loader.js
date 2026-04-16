@@ -5,8 +5,9 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const MLB = 'https://statsapi.mlb.com/api/v1';
 let saved = 0, errors = 0;
 
-async function sbUpsert(table, data) {
-  const res = await fetch(SUPABASE_URL + '/rest/v1/' + table, {
+async function sbUpsert(table, data, conflictCols) {
+  const conflict = conflictCols ? '?on_conflict=' + conflictCols : '';
+  const res = await fetch(SUPABASE_URL + '/rest/v1/' + table + conflict, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_KEY, 'apikey': SUPABASE_KEY, 'Prefer': 'resolution=merge-duplicates' },
     body: JSON.stringify(data)
@@ -18,6 +19,50 @@ function avg(a){return a.reduce((x,y)=>x+y,0)/a.length}
 function r1(v){return Math.round(v*10)/10}
 function r3(v){return Math.round(v*1000)/1000}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+
+// Fetch pitcher's season stats (IP, GS, SB allowed, LOB%, etc)
+async function fetchPitcherSeasonStats(pitcherId) {
+  try {
+    let stats = null, season = 2026;
+    const r26 = await fetch(MLB + '/people/' + pitcherId + '/stats?stats=season&season=2026&group=pitching');
+    const d26 = await r26.json();
+    stats = d26.stats?.[0]?.splits?.[0]?.stat;
+    let ip = stats ? parseFloat(stats.inningsPitched || 0) : 0;
+    // Need at least 30 IP for meaningful sample, else fall back to 2025
+    if (!stats || ip < 30) {
+      const r25 = await fetch(MLB + '/people/' + pitcherId + '/stats?stats=season&season=2025&group=pitching');
+      const d25 = await r25.json();
+      const s25 = d25.stats?.[0]?.splits?.[0]?.stat;
+      if (s25 && parseFloat(s25.inningsPitched || 0) > ip) {
+        stats = s25;
+        season = 2025;
+        ip = parseFloat(s25.inningsPitched || 0);
+      }
+    }
+    if (!stats) return null;
+    const gs = parseInt(stats.gamesStarted || 0);
+    const bf = parseInt(stats.battersFaced || 0);
+    const sb = parseInt(stats.stolenBases || 0);
+    const cs = parseInt(stats.caughtStealing || 0);
+    const lob = parseFloat(stats.leftOnBase || 0);
+    const h = parseInt(stats.hits || 0);
+    const bb = parseInt(stats.baseOnBalls || 0);
+    const er = parseInt(stats.earnedRuns || 0);
+    const hr = parseInt(stats.homeRuns || 0);
+    // LOB% = (H + BB + HBP - R) / (H + BB + HBP - 1.4*HR), simplified
+    const lobPct = (h + bb) > 0 ? lob / (h + bb) : null;
+    return {
+      ip, gs, bf, sb, cs,
+      avgIpPerStart: gs > 0 ? ip / gs : null,
+      avgBfPerStart: gs > 0 ? bf / gs : null,
+      lobPct: lobPct,
+      hr,
+      season,
+    };
+  } catch(e) {
+    return null;
+  }
+}
 
 function parseCSV(text){
   if(!text||text.length<100)return null;
@@ -40,6 +85,41 @@ function parseCSV(text){
 }
 
 const LABELS = {FF:'4-Seam FB',SI:'Sinker',FC:'Cutter',FA:'Fastball',SL:'Slider',CU:'Curveball',KC:'Knuckle-Curve',CS:'Slow Curve',CH:'Changeup',FS:'Splitter',ST:'Sweeper',SV:'Slurve',SW:'Sweeper'};
+
+function computeResultsByHand(rows, batterHand) {
+  if (!rows || !rows.length) return null;
+  const filtered = batterHand ? rows.filter(r => r.stand === batterHand) : rows;
+  if (filtered.length < 50) return null;
+
+  // PA events
+  const paEvents = ['single','double','triple','home_run','field_out','strikeout','walk','hit_by_pitch','grounded_into_double_play','sac_fly','force_out','fielders_choice','fielders_choice_out'];
+  const pas = filtered.filter(r => paEvents.includes(r.events));
+  const nPA = pas.length;
+  if (nPA < 20) return null;
+
+  // xwOBA allowed
+  const xwVals = filtered.map(r => parseFloat(r.estimated_woba_using_speedangle)).filter(v => !isNaN(v));
+  const xwoba = xwVals.length ? r3(avg(xwVals)) : null;
+
+  // K% and BB%
+  const ks = pas.filter(r => r.events === 'strikeout').length;
+  const bbs = pas.filter(r => r.events === 'walk').length;
+  const kPct = r1(ks / nPA * 100);
+  const bbPct = r1(bbs / nPA * 100);
+
+  // Hard Hit % allowed
+  const bip = filtered.filter(r => r.type === 'X');
+  const bipEV = bip.filter(r => !isNaN(parseFloat(r.launch_speed)));
+  const hh = bipEV.filter(r => parseFloat(r.launch_speed) >= 95);
+  const hardHitPct = bipEV.length ? r1(hh.length / bipEV.length * 100) : null;
+
+  // Whiff %
+  const swings = filtered.filter(r => ['swinging_strike','swinging_strike_blocked','foul','hit_into_play','foul_tip'].includes(r.description));
+  const whiffs = filtered.filter(r => ['swinging_strike','swinging_strike_blocked'].includes(r.description));
+  const whiffPct = swings.length ? r1(whiffs.length / swings.length * 100) : null;
+
+  return { xwoba, kPct, bbPct, hardHitPct, whiffPct, nPA };
+}
 
 function computeArsenalByHand(rows, batterHand) {
   if (!rows || !rows.length) return null;
@@ -86,7 +166,7 @@ async function fetchCSV(pitcherId, season) {
 }
 
 async function main() {
-  console.log('âš¾ EDGE DFS PITCHER LOADER â€” Node.js');
+  console.log('⚾ EDGE DFS PITCHER LOADER — Node.js');
 
   console.log('Fetching all team rosters...');
   const teamsRes = await fetch(MLB + '/teams?sportId=1');
@@ -111,14 +191,18 @@ async function main() {
   for (let i = 0; i < pitchers.length; i++) {
     const p = pitchers[i];
     try {
-      const csv = await fetchCSV(p.id, 2025);
+      const csv = await fetchCSV(p.id, '2025%7C2026');
       const rows = parseCSV(csv);
-      if (!rows || rows.length < 100) { console.log((i+1) + '/' + pitchers.length, p.name, 'â€” skipped'); continue; }
+      if (!rows || rows.length < 100) { console.log((i+1) + '/' + pitchers.length, p.name, '— skipped'); continue; }
 
       const arsenalAll = computeArsenalByHand(rows, null);
       const arsenalVsR = computeArsenalByHand(rows, 'R');
       const arsenalVsL = computeArsenalByHand(rows, 'L');
-      if (!arsenalAll) { console.log((i+1) + '/' + pitchers.length, p.name, 'â€” not enough data'); continue; }
+      if (!arsenalAll) { console.log((i+1) + '/' + pitchers.length, p.name, '— not enough data'); continue; }
+
+      // Compute results by batter hand
+      const resultsVsR = computeResultsByHand(rows, 'R');
+      const resultsVsL = computeResultsByHand(rows, 'L');
 
       let era = null, whip = null, kPer9 = null, bbPer9 = null, ip = null;
       try {
@@ -128,25 +212,49 @@ async function main() {
         if (st) { era = parseFloat(st.era)||null; whip = parseFloat(st.whip)||null; kPer9 = parseFloat(st.strikeoutsPer9Inn)||null; bbPer9 = parseFloat(st.walksPer9Inn)||null; ip = st.inningsPitched||null; }
       } catch(e) {}
 
+      // Fetch enhanced season stats (IP/start, BF/start, SB allowed, LOB%)
+      const ext = await fetchPitcherSeasonStats(p.id);
+
       await sbUpsert('edge_pitcher_cache', {
         pitcher_id: p.id, pitcher_name: p.name, team: p.team, hand: p.hand, season: 2025,
         arsenal: arsenalAll, arsenal_vs_r: arsenalVsR, arsenal_vs_l: arsenalVsL,
         era, whip, k_per_9: kPer9, bb_per_9: bbPer9, ip,
+        xwoba_vs_r: resultsVsR?.xwoba || null,
+        xwoba_vs_l: resultsVsL?.xwoba || null,
+        k_pct_vs_r: resultsVsR?.kPct || null,
+        k_pct_vs_l: resultsVsL?.kPct || null,
+        bb_pct_vs_r: resultsVsR?.bbPct || null,
+        bb_pct_vs_l: resultsVsL?.bbPct || null,
+        hard_hit_pct_vs_r: resultsVsR?.hardHitPct || null,
+        hard_hit_pct_vs_l: resultsVsL?.hardHitPct || null,
+        whiff_pct_vs_r: resultsVsR?.whiffPct || null,
+        whiff_pct_vs_l: resultsVsL?.whiffPct || null,
+        n_pa_vs_r: resultsVsR?.nPA || null,
+        n_pa_vs_l: resultsVsL?.nPA || null,
+        sb_allowed: ext?.sb || 0,
+        cs_caught: ext?.cs || 0,
+        innings_pitched: ext?.ip || null,
+        games_started: ext?.gs || 0,
+        avg_ip_per_start: ext?.avgIpPerStart ? r1(ext.avgIpPerStart) : null,
+        avg_bf_per_start: ext?.avgBfPerStart ? r1(ext.avgBfPerStart) : null,
+        lob_pct: ext?.lobPct ? r3(ext.lobPct) : null,
         game_date: new Date().toISOString().split('T')[0],
         updated_at: new Date().toISOString(),
-      });
+      }, 'pitcher_id,season');
 
       saved++;
       const topR = arsenalVsR ? Object.entries(arsenalVsR).sort((a,b)=>b[1].usage-a[1].usage).slice(0,2).map(([pt,d])=>d.label+' '+Math.round(d.usage*100)+'%').join(', ') : 'N/A';
       const topL = arsenalVsL ? Object.entries(arsenalVsL).sort((a,b)=>b[1].usage-a[1].usage).slice(0,2).map(([pt,d])=>d.label+' '+Math.round(d.usage*100)+'%').join(', ') : 'N/A';
-      console.log((i+1) + '/' + pitchers.length, p.name, '(' + p.team + ' ' + p.hand + 'HP) âœ“ vsR:', topR, '| vsL:', topL);
+      const splitR = resultsVsR ? 'xwOBA:'+resultsVsR.xwoba+' K:'+resultsVsR.kPct+'%' : 'N/A';
+      const splitL = resultsVsL ? 'xwOBA:'+resultsVsL.xwoba+' K:'+resultsVsL.kPct+'%' : 'N/A';
+      console.log((i+1) + '/' + pitchers.length, p.name, '(' + p.team + ' ' + p.hand + 'HP) ✓ vsR:', splitR, '| vsL:', splitL);
 
       if (i % 3 === 2) await sleep(1000);
       else await sleep(400);
 
     } catch(e) {
       errors++;
-      console.log((i+1) + '/' + pitchers.length, p.name, 'âœ—', e.message?.substring(0, 80));
+      console.log((i+1) + '/' + pitchers.length, p.name, '✗', e.message?.substring(0, 80));
     }
   }
 
