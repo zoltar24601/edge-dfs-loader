@@ -41,6 +41,7 @@ async function fetchPitcherSeasonStats(pitcherId) {
     }
     if (!stats) return null;
     const gs = parseInt(stats.gamesStarted || 0);
+    const games = parseInt(stats.gamesPlayed || 0);
     const bf = parseInt(stats.battersFaced || 0);
     const sb = parseInt(stats.stolenBases || 0);
     const cs = parseInt(stats.caughtStealing || 0);
@@ -49,13 +50,22 @@ async function fetchPitcherSeasonStats(pitcherId) {
     const bb = parseInt(stats.baseOnBalls || 0);
     const er = parseInt(stats.earnedRuns || 0);
     const hr = parseInt(stats.homeRuns || 0);
-    // LOB% = (H + BB + HBP - R) / (H + BB + HBP - 1.4*HR), simplified
-    const lobPct = (h + bb) > 0 ? lob / (h + bb) : null;
+    
+    // Only compute per-start averages if pitcher is mostly a starter
+    // (gamesStarted is at least 50% of games played, AND has 3+ starts)
+    const mostlyStarter = gs >= 3 && (games === 0 || gs / games >= 0.5);
+    const avgIp = mostlyStarter ? ip / gs : null;
+    const avgBf = mostlyStarter ? bf / gs : null;
+    
+    // Sanity check — if avg IP per start is impossibly high, it's bad data
+    const cleanAvgIp = (avgIp && avgIp >= 3.0 && avgIp <= 8.0) ? avgIp : null;
+    const cleanAvgBf = (avgBf && avgBf >= 12 && avgBf <= 32) ? avgBf : null;
+    
     return {
       ip, gs, bf, sb, cs,
-      avgIpPerStart: gs > 0 ? ip / gs : null,
-      avgBfPerStart: gs > 0 ? bf / gs : null,
-      lobPct: lobPct,
+      avgIpPerStart: cleanAvgIp,
+      avgBfPerStart: cleanAvgBf,
+      lobPct: null, // disabled - formula was wrong
       hr,
       season,
     };
