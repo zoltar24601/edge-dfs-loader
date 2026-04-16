@@ -28,3 +28,6 @@ jobs:
 
       - name: Load pitcher data
         run: node scripts/pitcher-loader.js
+
+      - name: Load catcher data
+        run: node scripts/catcher-loader.js
