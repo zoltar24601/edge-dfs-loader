@@ -20,6 +20,50 @@ function r1(v){return Math.round(v*10)/10}
 function r3(v){return Math.round(v*1000)/1000}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 
+// Fetch pitcher's season stats (IP, GS, SB allowed, LOB%, etc)
+async function fetchPitcherSeasonStats(pitcherId) {
+  try {
+    let stats = null, season = 2026;
+    const r26 = await fetch(MLB + '/people/' + pitcherId + '/stats?stats=season&season=2026&group=pitching');
+    const d26 = await r26.json();
+    stats = d26.stats?.[0]?.splits?.[0]?.stat;
+    let ip = stats ? parseFloat(stats.inningsPitched || 0) : 0;
+    // Need at least 30 IP for meaningful sample, else fall back to 2025
+    if (!stats || ip < 30) {
+      const r25 = await fetch(MLB + '/people/' + pitcherId + '/stats?stats=season&season=2025&group=pitching');
+      const d25 = await r25.json();
+      const s25 = d25.stats?.[0]?.splits?.[0]?.stat;
+      if (s25 && parseFloat(s25.inningsPitched || 0) > ip) {
+        stats = s25;
+        season = 2025;
+        ip = parseFloat(s25.inningsPitched || 0);
+      }
+    }
+    if (!stats) return null;
+    const gs = parseInt(stats.gamesStarted || 0);
+    const bf = parseInt(stats.battersFaced || 0);
+    const sb = parseInt(stats.stolenBases || 0);
+    const cs = parseInt(stats.caughtStealing || 0);
+    const lob = parseFloat(stats.leftOnBase || 0);
+    const h = parseInt(stats.hits || 0);
+    const bb = parseInt(stats.baseOnBalls || 0);
+    const er = parseInt(stats.earnedRuns || 0);
+    const hr = parseInt(stats.homeRuns || 0);
+    // LOB% = (H + BB + HBP - R) / (H + BB + HBP - 1.4*HR), simplified
+    const lobPct = (h + bb) > 0 ? lob / (h + bb) : null;
+    return {
+      ip, gs, bf, sb, cs,
+      avgIpPerStart: gs > 0 ? ip / gs : null,
+      avgBfPerStart: gs > 0 ? bf / gs : null,
+      lobPct: lobPct,
+      hr,
+      season,
+    };
+  } catch(e) {
+    return null;
+  }
+}
+
 function parseCSV(text){
   if(!text||text.length<100)return null;
   const lines=text.trim().split('\n');if(lines.length<2)return null;
@@ -74,7 +118,24 @@ function computeResultsByHand(rows, batterHand) {
   const whiffs = filtered.filter(r => ['swinging_strike','swinging_strike_blocked'].includes(r.description));
   const whiffPct = swings.length ? r1(whiffs.length / swings.length * 100) : null;
 
-  return { xwoba, kPct, bbPct, hardHitPct, whiffPct, nPA };
+  // Avg EV allowed
+  const avgEV = bipEV.length ? r1(avg(bipEV.map(r => parseFloat(r.launch_speed)))) : null;
+
+  // FB% (fly balls / balls in play). bb_type can be: ground_ball, line_drive, fly_ball, popup
+  const bbTyped = bip.filter(r => r.bb_type);
+  const flyBalls = bbTyped.filter(r => r.bb_type === 'fly_ball' || r.bb_type === 'popup').length;
+  const fbPct = bbTyped.length ? r1(flyBalls / bbTyped.length * 100) : null;
+
+  // Barrel% allowed (using launch angle + EV optimal range as proxy)
+  // Barrel: EV >= 98 and LA between 26-30 (rough definition)
+  const barrels = bipEV.filter(r => {
+    const ev = parseFloat(r.launch_speed);
+    const la = parseFloat(r.launch_angle);
+    return ev >= 98 && la >= 26 && la <= 30;
+  });
+  const barrelPct = bipEV.length ? r1(barrels.length / bipEV.length * 100) : null;
+
+  return { xwoba, kPct, bbPct, hardHitPct, whiffPct, nPA, avgEV, fbPct, barrelPct };
 }
 
 function computeArsenalByHand(rows, batterHand) {
@@ -168,6 +229,9 @@ async function main() {
         if (st) { era = parseFloat(st.era)||null; whip = parseFloat(st.whip)||null; kPer9 = parseFloat(st.strikeoutsPer9Inn)||null; bbPer9 = parseFloat(st.walksPer9Inn)||null; ip = st.inningsPitched||null; }
       } catch(e) {}
 
+      // Fetch enhanced season stats (IP/start, BF/start, SB allowed, LOB%)
+      const ext = await fetchPitcherSeasonStats(p.id);
+
       await sbUpsert('edge_pitcher_cache', {
         pitcher_id: p.id, pitcher_name: p.name, team: p.team, hand: p.hand, season: 2025,
         arsenal: arsenalAll, arsenal_vs_r: arsenalVsR, arsenal_vs_l: arsenalVsL,
@@ -184,6 +248,19 @@ async function main() {
         whiff_pct_vs_l: resultsVsL?.whiffPct || null,
         n_pa_vs_r: resultsVsR?.nPA || null,
         n_pa_vs_l: resultsVsL?.nPA || null,
+        avg_ev_allowed_r: resultsVsR?.avgEV || null,
+        avg_ev_allowed_l: resultsVsL?.avgEV || null,
+        fb_pct_r: resultsVsR?.fbPct || null,
+        fb_pct_l: resultsVsL?.fbPct || null,
+        barrel_pct_allowed_r: resultsVsR?.barrelPct || null,
+        barrel_pct_allowed_l: resultsVsL?.barrelPct || null,
+        sb_allowed: ext?.sb || 0,
+        cs_caught: ext?.cs || 0,
+        innings_pitched: ext?.ip || null,
+        games_started: ext?.gs || 0,
+        avg_ip_per_start: ext?.avgIpPerStart ? r1(ext.avgIpPerStart) : null,
+        avg_bf_per_start: ext?.avgBfPerStart ? r1(ext.avgBfPerStart) : null,
+        lob_pct: ext?.lobPct ? r3(ext.lobPct) : null,
         game_date: new Date().toISOString().split('T')[0],
         updated_at: new Date().toISOString(),
       }, 'pitcher_id,season');
