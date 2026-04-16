@@ -6,8 +6,9 @@ const MLB = 'https://statsapi.mlb.com/api/v1';
 const today = new Date().toISOString().split('T')[0];
 let saved = 0, errors = 0, skipped = 0;
 
-async function sbUpsert(table, data) {
-  const res = await fetch(SUPABASE_URL + '/rest/v1/' + table, {
+async function sbUpsert(table, data, conflictCols) {
+  const conflict = conflictCols ? '?on_conflict=' + conflictCols : '';
+  const res = await fetch(SUPABASE_URL + '/rest/v1/' + table + conflict, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_KEY, 'apikey': SUPABASE_KEY, 'Prefer': 'resolution=merge-duplicates' },
     body: JSON.stringify(data)
@@ -20,6 +21,36 @@ function r1(v){return Math.round(v*10)/10}
 function r3(v){return Math.round(v*1000)/1000}
 function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v))}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+
+// Fetch player's stolen base stats and sprint speed for current season
+async function fetchPlayerSBData(playerId) {
+  try {
+    // Get season hitting stats (SB, CS, PA)
+    const statRes = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2026&group=hitting');
+    const statData = await statRes.json();
+    const stats = statData.stats?.[0]?.splits?.[0]?.stat;
+    let sb = 0, cs = 0, pa = 0;
+    if (stats) {
+      sb = parseInt(stats.stolenBases || 0);
+      cs = parseInt(stats.caughtStealing || 0);
+      pa = parseInt(stats.plateAppearances || 0);
+    }
+    // If no 2026 data, fall back to 2025
+    if (pa < 50) {
+      const r25 = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2025&group=hitting');
+      const d25 = await r25.json();
+      const s25 = d25.stats?.[0]?.splits?.[0]?.stat;
+      if (s25) {
+        sb = parseInt(s25.stolenBases || 0);
+        cs = parseInt(s25.caughtStealing || 0);
+        pa = parseInt(s25.plateAppearances || 0);
+      }
+    }
+    return { sb, cs, pa, attempts: sb + cs, successRate: (sb + cs) > 0 ? sb / (sb + cs) : null };
+  } catch(e) {
+    return { sb: 0, cs: 0, pa: 0, attempts: 0, successRate: null };
+  }
+}
 
 function parseCSV(text){
   if(!text||text.length<100)return null;
@@ -52,17 +83,18 @@ function computeSplits(rows,hand){
   Object.entries(byP).forEach(([pt,p])=>{
     if(p.length<10)return;
     const ip=p.filter(x=>x.type==='X');
+    const ipWithEV=ip.filter(x=>!isNaN(parseFloat(x.launch_speed)));
     const sw=p.filter(x=>['swinging_strike','swinging_strike_blocked','foul','hit_into_play','foul_tip'].includes(x.description));
     const wh=p.filter(x=>['swinging_strike','swinging_strike_blocked'].includes(x.description));
-    const ev=ip.map(x=>parseFloat(x.launch_speed)).filter(v=>!isNaN(v));
+    const ev=ipWithEV.map(x=>parseFloat(x.launch_speed));
     const wb=p.map(x=>parseFloat(x.estimated_woba_using_speedangle)).filter(v=>!isNaN(v));
     const xb=p.map(x=>parseFloat(x.estimated_ba_using_speedangle)).filter(v=>!isNaN(v));
-    const hh=ip.filter(x=>parseFloat(x.launch_speed)>=95);
-    const ld=ip.filter(x=>{const a=parseFloat(x.launch_angle);return a>=10&&a<=25;});
+    const hh=ipWithEV.filter(x=>parseFloat(x.launch_speed)>=95);
+    const ld=ipWithEV.filter(x=>{const a=parseFloat(x.launch_angle);return a>=10&&a<=25;});
     res[pt]={label:L[pt]||pt,n:p.length,
       woba:wb.length?r3(avg(wb)):null,xba:xb.length?r3(avg(xb)):null,
-      hardHitPct:ip.length?r1(hh.length/ip.length*100):0,
-      ldPct:ip.length?r1(ld.length/ip.length*100):0,
+      hardHitPct:ipWithEV.length?r1(hh.length/ipWithEV.length*100):0,
+      ldPct:ipWithEV.length?r1(ld.length/ipWithEV.length*100):0,
       whiffPct:sw.length?r1(wh.length/sw.length*100):0,
       avgEV:ev.length?r1(avg(ev)):0};
   });
@@ -81,10 +113,11 @@ function computeStreak(rows,days){
   if(nPA<5)return{nPA};
   const wk=recent.filter(r=>r.events==='walk'),ks=recent.filter(r=>r.events==='strikeout');
   const bip=recent.filter(r=>r.type==='X');
-  const hh=bip.filter(r=>parseFloat(r.launch_speed)>=95);
-  const br=bip.filter(r=>{const e=parseFloat(r.launch_speed),a=parseFloat(r.launch_angle);return e>=98&&a>=26&&a<=30;});
-  const ld=bip.filter(r=>{const a=parseFloat(r.launch_angle);return a>=10&&a<=25;});
-  const ev=bip.map(r=>parseFloat(r.launch_speed)).filter(v=>!isNaN(v));
+  const bipEV=bip.filter(r=>!isNaN(parseFloat(r.launch_speed)));
+  const hh=bipEV.filter(r=>parseFloat(r.launch_speed)>=95);
+  const br=bipEV.filter(r=>{const e=parseFloat(r.launch_speed),a=parseFloat(r.launch_angle);return e>=98&&a>=26&&a<=30;});
+  const ld=bipEV.filter(r=>{const a=parseFloat(r.launch_angle);return !isNaN(a)&&a>=10&&a<=25;});
+  const ev=bipEV.map(r=>parseFloat(r.launch_speed));
   const wb=recent.map(r=>parseFloat(r.estimated_woba_using_speedangle)).filter(v=>!isNaN(v));
   const xb=recent.map(r=>parseFloat(r.estimated_ba_using_speedangle)).filter(v=>!isNaN(v));
   const sw=recent.filter(r=>['swinging_strike','swinging_strike_blocked','foul','hit_into_play','foul_tip'].includes(r.description));
@@ -93,9 +126,9 @@ function computeStreak(rows,days){
   const oz=recent.filter(r=>['11','12','13','14'].includes(r.zone));
   const ch=oz.filter(r=>['swinging_strike','swinging_strike_blocked','foul','hit_into_play'].includes(r.description));
   return{nPA,bbPct:r1(wk.length/nPA*100),kPct:r1(ks.length/nPA*100),
-    hardHitPct:r1(bip.length?hh.length/bip.length*100:0),
-    barrelPct:r1(bip.length?br.length/bip.length*100:0),
-    ldPct:r1(bip.length?ld.length/bip.length*100:0),
+    hardHitPct:r1(bipEV.length?hh.length/bipEV.length*100:0),
+    barrelPct:r1(bipEV.length?br.length/bipEV.length*100:0),
+    ldPct:r1(bipEV.length?ld.length/bipEV.length*100:0),
     avgEV:r1(ev.length?avg(ev):0),
     xwoba:wb.length?r3(avg(wb)):null,xba:xb.length?r3(avg(xb)):null,
     contactPct:r1(sw.length?ct.length/sw.length*100:0),
@@ -128,7 +161,7 @@ async function fetchCSV(playerId, season) {
 }
 
 async function main() {
-  console.log('âš¾ EDGE DFS HITTER LOADER â€” Node.js');
+  console.log('⚾ EDGE DFS HITTER LOADER — Node.js');
   console.log('Date:', today);
 
   // 1. Schedule
@@ -168,20 +201,33 @@ async function main() {
   for (let i = 0; i < hitters.length; i++) {
     const h = hitters[i];
     try {
-      const csv2025 = await fetchCSV(h.id, 2025);
-      const rows2025 = parseCSV(csv2025);
-      if (!rows2025 || rows2025.length < 20) { skipped++; console.log((i+1) + '/' + hitters.length, h.name, 'â€” skipped'); continue; }
+      const csvAll = await fetchCSV(h.id, '2025%7C2026');
+      const rowsAll = parseCSV(csvAll);
+      if (!rowsAll || rowsAll.length < 20) { skipped++; console.log((i+1) + '/' + hitters.length, h.name, '— skipped'); continue; }
 
       const csv2026 = await fetchCSV(h.id, 2026);
       const rows2026 = parseCSV(csv2026);
 
-      const splitsR = computeSplits(rows2025, 'R');
-      const splitsL = computeSplits(rows2025, 'L');
+      // Splits use combined 2025+2026 data (bigger sample + current season)
+      const splitsR = computeSplits(rowsAll, 'R');
+      const splitsL = computeSplits(rowsAll, 'L');
 
+      // Hot streak uses 2026 only (current season), fallback to last 14 days of all data
       let streak, streakSrc;
       if (rows2026 && rows2026.length >= 20) { streak = computeStreak(rows2026, 14); streakSrc = '2026'; }
-      else { streak = computeStreak(rows2025, 14); streakSrc = '2025'; }
+      else { streak = computeStreak(rowsAll, 14); streakSrc = 'all'; }
       const hot = calcHot(streak);
+
+      // Fetch stolen base data for this player
+      const sbData = await fetchPlayerSBData(h.id);
+
+      const sbFields = {
+        sb_count: sbData.sb,
+        cs_count: sbData.cs,
+        sb_attempts: sbData.attempts,
+        sb_success_rate: sbData.successRate,
+        season_pa: sbData.pa,
+      };
 
       if (splitsR && Object.keys(splitsR).length > 0) {
         await sbUpsert('edge_matchup_cache', {
@@ -193,8 +239,9 @@ async function main() {
           xba: streak?.xba || null, bb_pct: streak?.bbPct || null, k_pct: streak?.kPct || null,
           ld_pct: streak?.ldPct || null, avg_ev: streak?.avgEV || null,
           contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
-          whiff_pct: streak?.whiffPct || null, updated_at: new Date().toISOString()
-        });
+          whiff_pct: streak?.whiffPct || null, updated_at: new Date().toISOString(),
+          ...sbFields
+        }, 'player_id,pitcher_hand,season');
       }
 
       if (splitsL && Object.keys(splitsL).length > 0) {
@@ -207,19 +254,31 @@ async function main() {
           xba: streak?.xba || null, bb_pct: streak?.bbPct || null, k_pct: streak?.kPct || null,
           ld_pct: streak?.ldPct || null, avg_ev: streak?.avgEV || null,
           contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
-          whiff_pct: streak?.whiffPct || null, updated_at: new Date().toISOString()
-        });
+          whiff_pct: streak?.whiffPct || null, updated_at: new Date().toISOString(),
+          ...sbFields
+        }, 'player_id,pitcher_hand,season');
       }
 
+      // Log hot score + all components to history table for trend tracking
+      await sbUpsert('edge_hot_history', {
+        player_id: h.id, player_name: h.name, game_date: today, hot_score: hot.score,
+        hard_hit_pct: streak?.hardHitPct || null, xwoba: streak?.xwoba || null,
+        bb_pct: streak?.bbPct || null, k_pct: streak?.kPct || null,
+        barrel_pct: streak?.barrelPct || null, avg_ev: streak?.avgEV || null,
+        ld_pct: streak?.ldPct || null, chase_pct: streak?.chasePct || null,
+        whiff_pct: streak?.whiffPct || null, contact_pct: streak?.contactPct || null,
+        n_pa: streak?.nPA || 0,
+      }, 'player_id,game_date');
+
       saved++;
-      console.log((i+1) + '/' + hitters.length, h.name, 'âœ“ vsR:' + Object.keys(splitsR).length, 'vsL:' + Object.keys(splitsL).length, 'hot:' + hot.score, '[' + streakSrc + ']');
+      console.log((i+1) + '/' + hitters.length, h.name, '✓ vsR:' + Object.keys(splitsR).length, 'vsL:' + Object.keys(splitsL).length, 'hot:' + hot.score, '[' + streakSrc + ']');
 
       if (i % 3 === 2) await sleep(1200);
       else await sleep(500);
 
     } catch(e) {
       errors++;
-      console.log((i+1) + '/' + hitters.length, h.name, 'âœ—', e.message?.substring(0, 80));
+      console.log((i+1) + '/' + hitters.length, h.name, '✗', e.message?.substring(0, 80));
     }
   }
 
