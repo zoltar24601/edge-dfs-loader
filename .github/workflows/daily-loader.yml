@@ -20,14 +20,5 @@ jobs:
           node-version: '20'
       - run: npm install node-fetch
 
-      - name: Backfill results
-        run: node scripts/results-backfill.js
-
-      - name: Load hitter data
-        run: node scripts/hitter-loader.js
-
-      - name: Load pitcher data
-        run: node scripts/pitcher-loader.js
-
       - name: Load catcher data
         run: node scripts/catcher-loader.js
