@@ -22,6 +22,36 @@ function r3(v){return Math.round(v*1000)/1000}
 function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v))}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 
+// Fetch player's stolen base stats and sprint speed for current season
+async function fetchPlayerSBData(playerId) {
+  try {
+    // Get season hitting stats (SB, CS, PA)
+    const statRes = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2026&group=hitting');
+    const statData = await statRes.json();
+    const stats = statData.stats?.[0]?.splits?.[0]?.stat;
+    let sb = 0, cs = 0, pa = 0;
+    if (stats) {
+      sb = parseInt(stats.stolenBases || 0);
+      cs = parseInt(stats.caughtStealing || 0);
+      pa = parseInt(stats.plateAppearances || 0);
+    }
+    // If no 2026 data, fall back to 2025
+    if (pa < 50) {
+      const r25 = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2025&group=hitting');
+      const d25 = await r25.json();
+      const s25 = d25.stats?.[0]?.splits?.[0]?.stat;
+      if (s25) {
+        sb = parseInt(s25.stolenBases || 0);
+        cs = parseInt(s25.caughtStealing || 0);
+        pa = parseInt(s25.plateAppearances || 0);
+      }
+    }
+    return { sb, cs, pa, attempts: sb + cs, successRate: (sb + cs) > 0 ? sb / (sb + cs) : null };
+  } catch(e) {
+    return { sb: 0, cs: 0, pa: 0, attempts: 0, successRate: null };
+  }
+}
+
 function parseCSV(text){
   if(!text||text.length<100)return null;
   const lines=text.trim().split('\n');if(lines.length<2)return null;
@@ -88,6 +118,9 @@ function computeStreak(rows,days){
   const br=bipEV.filter(r=>{const e=parseFloat(r.launch_speed),a=parseFloat(r.launch_angle);return e>=98&&a>=26&&a<=30;});
   const ld=bipEV.filter(r=>{const a=parseFloat(r.launch_angle);return !isNaN(a)&&a>=10&&a<=25;});
   const ev=bipEV.map(r=>parseFloat(r.launch_speed));
+  const las=bipEV.map(r=>parseFloat(r.launch_angle)).filter(a=>!isNaN(a));
+  const fbBip=bip.filter(r=>r.bb_type==='fly_ball'||r.bb_type==='popup');
+  const bipTyped=bip.filter(r=>r.bb_type);
   const wb=recent.map(r=>parseFloat(r.estimated_woba_using_speedangle)).filter(v=>!isNaN(v));
   const xb=recent.map(r=>parseFloat(r.estimated_ba_using_speedangle)).filter(v=>!isNaN(v));
   const sw=recent.filter(r=>['swinging_strike','swinging_strike_blocked','foul','hit_into_play','foul_tip'].includes(r.description));
@@ -100,6 +133,8 @@ function computeStreak(rows,days){
     barrelPct:r1(bipEV.length?br.length/bipEV.length*100:0),
     ldPct:r1(bipEV.length?ld.length/bipEV.length*100:0),
     avgEV:r1(ev.length?avg(ev):0),
+    avgLA:r1(las.length?avg(las):0),
+    fbPct:r1(bipTyped.length?fbBip.length/bipTyped.length*100:0),
     xwoba:wb.length?r3(avg(wb)):null,xba:xb.length?r3(avg(xb)):null,
     contactPct:r1(sw.length?ct.length/sw.length*100:0),
     chasePct:oz.length?r1(ch.length/oz.length*100):null,
@@ -188,6 +223,17 @@ async function main() {
       else { streak = computeStreak(rowsAll, 14); streakSrc = 'all'; }
       const hot = calcHot(streak);
 
+      // Fetch stolen base data for this player
+      const sbData = await fetchPlayerSBData(h.id);
+
+      const sbFields = {
+        sb_count: sbData.sb,
+        cs_count: sbData.cs,
+        sb_attempts: sbData.attempts,
+        sb_success_rate: sbData.successRate,
+        season_pa: sbData.pa,
+      };
+
       if (splitsR && Object.keys(splitsR).length > 0) {
         await sbUpsert('edge_matchup_cache', {
           player_id: h.id, player_name: h.name, team: h.team, position: h.position,
@@ -198,7 +244,8 @@ async function main() {
           xba: streak?.xba || null, bb_pct: streak?.bbPct || null, k_pct: streak?.kPct || null,
           ld_pct: streak?.ldPct || null, avg_ev: streak?.avgEV || null,
           contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
-          whiff_pct: streak?.whiffPct || null, updated_at: new Date().toISOString()
+          whiff_pct: streak?.whiffPct || null, avg_la: streak?.avgLA || null, fb_pct: streak?.fbPct || null, updated_at: new Date().toISOString(),
+          ...sbFields
         }, 'player_id,pitcher_hand,season');
       }
 
@@ -212,7 +259,8 @@ async function main() {
           xba: streak?.xba || null, bb_pct: streak?.bbPct || null, k_pct: streak?.kPct || null,
           ld_pct: streak?.ldPct || null, avg_ev: streak?.avgEV || null,
           contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
-          whiff_pct: streak?.whiffPct || null, updated_at: new Date().toISOString()
+          whiff_pct: streak?.whiffPct || null, avg_la: streak?.avgLA || null, fb_pct: streak?.fbPct || null, updated_at: new Date().toISOString(),
+          ...sbFields
         }, 'player_id,pitcher_hand,season');
       }
 
