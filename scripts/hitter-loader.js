@@ -52,6 +52,41 @@ async function fetchPlayerSBData(playerId) {
   }
 }
 
+// Fetch season-level Statcast stats (barrel%, hard hit%, avg EV, sprint speed)
+async function fetchSavantSeasonStats(playerId) {
+  try {
+    const url = 'https://baseballsavant.mlb.com/player-page/batted-ball-data?playerId=' + playerId + '&season=2026&type=batter&minBBE=10';
+    // Try the expected-stats endpoint which has barrel% pre-computed
+    const r = await fetch('https://baseballsavant.mlb.com/api/statcast/stats?playerId=' + playerId + '&position=B&season=2026');
+    if (!r.ok) return null;
+    const data = await r.json();
+    if (!data || !data.length) {
+      // Fall back to 2025
+      const r25 = await fetch('https://baseballsavant.mlb.com/api/statcast/stats?playerId=' + playerId + '&position=B&season=2025');
+      if (!r25.ok) return null;
+      const d25 = await r25.json();
+      if (!d25?.length) return null;
+      return parseSavantStats(d25[0]);
+    }
+    return parseSavantStats(data[0]);
+  } catch(e) {
+    return null;
+  }
+}
+
+function parseSavantStats(s) {
+  if (!s) return null;
+  return {
+    barrelPct: s.barrel_batted_rate != null ? r1(parseFloat(s.barrel_batted_rate)) : null,
+    hardHitPct: s.hard_hit_percent != null ? r1(parseFloat(s.hard_hit_percent)) : null,
+    avgEV: s.avg_hit_speed != null ? r1(parseFloat(s.avg_hit_speed)) : null,
+    avgLA: s.avg_hit_angle != null ? r1(parseFloat(s.avg_hit_angle)) : null,
+    sprintSpeed: s.sprint_speed != null ? r1(parseFloat(s.sprint_speed)) : null,
+    xwoba: s.xwoba != null ? r3(parseFloat(s.xwoba)) : null,
+    xba: s.xba != null ? r3(parseFloat(s.xba)) : null,
+  };
+}
+
 function parseCSV(text){
   if(!text||text.length<100)return null;
   const lines=text.trim().split('\n');if(lines.length<2)return null;
@@ -99,6 +134,19 @@ function computeSplits(rows,hand){
       avgEV:ev.length?r1(avg(ev)):0};
   });
   return res;
+}
+
+// Compute full-season K% against a specific pitcher hand (2025+2026 combined)
+function computeSeasonKPct(rows, hand) {
+  if (!rows || !rows.length) return null;
+  const f = hand ? rows.filter(r => r.p_throws === hand) : rows;
+  if (!f.length) return null;
+  const paE = ['single','double','triple','home_run','field_out','strikeout','walk','hit_by_pitch','grounded_into_double_play','sac_fly','force_out','fielders_choice','fielders_choice_out'];
+  const pas = f.filter(r => paE.includes(r.events));
+  const nPA = pas.length;
+  if (nPA < 20) return null;
+  const ks = pas.filter(r => r.events === 'strikeout').length;
+  return { kPct: r1(ks / nPA * 100), nPA };
 }
 
 function computeStreak(rows,days){
@@ -217,6 +265,10 @@ async function main() {
       const splitsR = computeSplits(rowsAll, 'R');
       const splitsL = computeSplits(rowsAll, 'L');
 
+      // Full-season K% by pitcher hand (2025+2026 combined, much bigger sample than 14-day streak)
+      const seasonKvsR = computeSeasonKPct(rowsAll, 'R');
+      const seasonKvsL = computeSeasonKPct(rowsAll, 'L');
+
       // Hot streak uses 2026 only (current season), fallback to last 14 days of all data
       let streak, streakSrc;
       if (rows2026 && rows2026.length >= 20) { streak = computeStreak(rows2026, 14); streakSrc = '2026'; }
@@ -225,6 +277,9 @@ async function main() {
 
       // Fetch stolen base data for this player
       const sbData = await fetchPlayerSBData(h.id);
+      
+      // Fetch season-level Statcast stats (barrel%, hard hit%, sprint speed, etc)
+      const savant = await fetchSavantSeasonStats(h.id);
 
       const sbFields = {
         sb_count: sbData.sb,
@@ -232,6 +287,11 @@ async function main() {
         sb_attempts: sbData.attempts,
         sb_success_rate: sbData.successRate,
         season_pa: sbData.pa,
+        sprint_speed: savant?.sprintSpeed || null,
+        season_barrel_pct: savant?.barrelPct || null,
+        season_hard_hit_pct: savant?.hardHitPct || null,
+        season_avg_ev: savant?.avgEV || null,
+        season_avg_la: savant?.avgLA || null,
       };
 
       if (splitsR && Object.keys(splitsR).length > 0) {
@@ -244,7 +304,9 @@ async function main() {
           xba: streak?.xba || null, bb_pct: streak?.bbPct || null, k_pct: streak?.kPct || null,
           ld_pct: streak?.ldPct || null, avg_ev: streak?.avgEV || null,
           contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
-          whiff_pct: streak?.whiffPct || null, avg_la: streak?.avgLA || null, fb_pct: streak?.fbPct || null, updated_at: new Date().toISOString(),
+          whiff_pct: streak?.whiffPct || null, avg_la: streak?.avgLA || null, fb_pct: streak?.fbPct || null,
+          season_k_pct: seasonKvsR?.kPct || null, season_pa_vs_hand: seasonKvsR?.nPA || null,
+          updated_at: new Date().toISOString(),
           ...sbFields
         }, 'player_id,pitcher_hand,season');
       }
@@ -259,7 +321,9 @@ async function main() {
           xba: streak?.xba || null, bb_pct: streak?.bbPct || null, k_pct: streak?.kPct || null,
           ld_pct: streak?.ldPct || null, avg_ev: streak?.avgEV || null,
           contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
-          whiff_pct: streak?.whiffPct || null, avg_la: streak?.avgLA || null, fb_pct: streak?.fbPct || null, updated_at: new Date().toISOString(),
+          whiff_pct: streak?.whiffPct || null, avg_la: streak?.avgLA || null, fb_pct: streak?.fbPct || null,
+          season_k_pct: seasonKvsL?.kPct || null, season_pa_vs_hand: seasonKvsL?.nPA || null,
+          updated_at: new Date().toISOString(),
           ...sbFields
         }, 'player_id,pitcher_hand,season');
       }
