@@ -28,13 +28,26 @@ function r3(v){return Math.round(v*1000)/1000}
 
 async function fetchCatcherStats(catcherId, season) {
   try {
+    // Try catching group first
+    let stats = null;
     const r = await fetch(MLB + '/people/' + catcherId + '/stats?stats=season&season=' + season + '&group=catching');
     const d = await r.json();
-    const stats = d.stats?.[0]?.splits?.[0]?.stat;
+    stats = d.stats?.[0]?.splits?.[0]?.stat;
+    
+    // If no catching stats, try fielding group
+    if (!stats || !stats.inningsPlayed) {
+      const r2 = await fetch(MLB + '/people/' + catcherId + '/stats?stats=season&season=' + season + '&group=fielding');
+      const d2 = await r2.json();
+      // Find the catcher position split
+      const splits = d2.stats?.[0]?.splits || [];
+      const catchSplit = splits.find(s => s.position?.abbreviation === 'C') || splits[0];
+      if (catchSplit?.stat) stats = catchSplit.stat;
+    }
+    
     if (!stats) return null;
-    const sb = parseInt(stats.stolenBases || 0);
+    const sb = parseInt(stats.stolenBases || stats.passedBalls || 0);
     const cs = parseInt(stats.caughtStealing || 0);
-    const innings = parseFloat(stats.inningsPlayed || stats.inningsCaught || 0);
+    const innings = parseFloat(stats.innings || stats.inningsPlayed || stats.inningsCaught || 0);
     return {
       sb, cs,
       innings,
