@@ -84,6 +84,9 @@ function parseSavantStats(s) {
     sprintSpeed: s.sprint_speed != null ? r1(parseFloat(s.sprint_speed)) : null,
     xwoba: s.xwoba != null ? r3(parseFloat(s.xwoba)) : null,
     xba: s.xba != null ? r3(parseFloat(s.xba)) : null,
+    xslg: s.xslg != null ? r3(parseFloat(s.xslg)) : null,
+    xiso: s.xiso != null ? r3(parseFloat(s.xiso)) : null,
+    xobp: s.xobp != null ? r3(parseFloat(s.xobp)) : null,
   };
 }
 
@@ -292,6 +295,10 @@ async function main() {
         season_hard_hit_pct: savant?.hardHitPct || null,
         season_avg_ev: savant?.avgEV || null,
         season_avg_la: savant?.avgLA || null,
+        season_xslg: savant?.xslg || null,
+        season_xiso: savant?.xiso || null,
+        season_xba: savant?.xba || null,
+        season_xwoba: savant?.xwoba || null,
       };
 
       if (splitsR && Object.keys(splitsR).length > 0) {
