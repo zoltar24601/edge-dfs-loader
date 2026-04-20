@@ -137,7 +137,6 @@ function computeResultsByHand(rows, batterHand) {
   const fbPct = bbTyped.length ? r1(flyBalls / bbTyped.length * 100) : null;
 
   // Barrel% allowed (using launch angle + EV optimal range as proxy)
-  // Barrel: EV >= 98 and LA between 26-30 (rough definition)
   const barrels = bipEV.filter(r => {
     const ev = parseFloat(r.launch_speed);
     const la = parseFloat(r.launch_angle);
@@ -145,7 +144,19 @@ function computeResultsByHand(rows, batterHand) {
   });
   const barrelPct = bipEV.length ? r1(barrels.length / bipEV.length * 100) : null;
 
-  return { xwoba, kPct, bbPct, hardHitPct, whiffPct, nPA, avgEV, fbPct, barrelPct };
+  // SLG allowed (actual slugging = total bases / AB)
+  // AB = PA - BB - HBP - SF (approximate: PA - walks - HBP)
+  const abEvents = ['single','double','triple','home_run','field_out','strikeout','grounded_into_double_play','force_out','fielders_choice','fielders_choice_out'];
+  const abs = pas.filter(r => abEvents.includes(r.events));
+  const nAB = abs.length;
+  const singles = abs.filter(r => r.events === 'single').length;
+  const doubles = abs.filter(r => r.events === 'double').length;
+  const triples = abs.filter(r => r.events === 'triple').length;
+  const homers = abs.filter(r => r.events === 'home_run').length;
+  const totalBases = singles + doubles * 2 + triples * 3 + homers * 4;
+  const slgAllowed = nAB > 0 ? r3(totalBases / nAB) : null;
+
+  return { xwoba, kPct, bbPct, hardHitPct, whiffPct, nPA, avgEV, fbPct, barrelPct, slgAllowed };
 }
 
 function computeArsenalByHand(rows, batterHand) {
@@ -264,6 +275,8 @@ async function main() {
         fb_pct_l: resultsVsL?.fbPct || null,
         barrel_pct_allowed_r: resultsVsR?.barrelPct || null,
         barrel_pct_allowed_l: resultsVsL?.barrelPct || null,
+        slg_allowed_r: resultsVsR?.slgAllowed || null,
+        slg_allowed_l: resultsVsL?.slgAllowed || null,
         sb_allowed: ext?.sb || 0,
         cs_caught: ext?.cs || 0,
         innings_pitched: ext?.ip || null,
