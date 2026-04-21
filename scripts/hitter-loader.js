@@ -25,17 +25,17 @@ function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 // Fetch player's stolen base stats and sprint speed for current season
 async function fetchPlayerSBData(playerId) {
   try {
-    // Get season hitting stats (SB, CS, PA)
     const statRes = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2026&group=hitting');
     const statData = await statRes.json();
     const stats = statData.stats?.[0]?.splits?.[0]?.stat;
-    let sb = 0, cs = 0, pa = 0;
+    let sb = 0, cs = 0, pa = 0, hr = 0, ab = 0;
     if (stats) {
       sb = parseInt(stats.stolenBases || 0);
       cs = parseInt(stats.caughtStealing || 0);
       pa = parseInt(stats.plateAppearances || 0);
+      hr = parseInt(stats.homeRuns || 0);
+      ab = parseInt(stats.atBats || 0);
     }
-    // If no 2026 data, fall back to 2025
     if (pa < 50) {
       const r25 = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2025&group=hitting');
       const d25 = await r25.json();
@@ -44,11 +44,13 @@ async function fetchPlayerSBData(playerId) {
         sb = parseInt(s25.stolenBases || 0);
         cs = parseInt(s25.caughtStealing || 0);
         pa = parseInt(s25.plateAppearances || 0);
+        hr = parseInt(s25.homeRuns || 0);
+        ab = parseInt(s25.atBats || 0);
       }
     }
-    return { sb, cs, pa, attempts: sb + cs, successRate: (sb + cs) > 0 ? sb / (sb + cs) : null };
+    return { sb, cs, pa, hr, ab, attempts: sb + cs, successRate: (sb + cs) > 0 ? sb / (sb + cs) : null, hrPerPA: pa > 0 ? r3(hr / pa) : null };
   } catch(e) {
-    return { sb: 0, cs: 0, pa: 0, attempts: 0, successRate: null };
+    return { sb: 0, cs: 0, pa: 0, hr: 0, ab: 0, attempts: 0, successRate: null, hrPerPA: null };
   }
 }
 
@@ -356,6 +358,9 @@ async function main() {
         sb_attempts: sbData.attempts,
         sb_success_rate: sbData.successRate,
         season_pa: sbData.pa,
+        season_hr: sbData.hr,
+        season_ab: sbData.ab,
+        season_hr_per_pa: sbData.hrPerPA,
         sprint_speed: savant?.sprintSpeed || null,
         season_barrel_pct: savant?.barrelPct || null,
         season_hard_hit_pct: savant?.hardHitPct || null,
