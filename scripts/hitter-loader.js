@@ -25,72 +25,40 @@ function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 // Fetch player's stolen base stats and sprint speed for current season
 async function fetchPlayerSBData(playerId) {
   try {
-    const statRes = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2026&group=hitting');
-    const statData = await statRes.json();
-    const stats = statData.stats?.[0]?.splits?.[0]?.stat;
     let sb = 0, cs = 0, pa = 0, hr = 0, ab = 0;
-    if (stats) {
-      sb = parseInt(stats.stolenBases || 0);
-      cs = parseInt(stats.caughtStealing || 0);
-      pa = parseInt(stats.plateAppearances || 0);
-      hr = parseInt(stats.homeRuns || 0);
-      ab = parseInt(stats.atBats || 0);
+    
+    // Get 2026 stats
+    const r26 = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2026&group=hitting');
+    const d26 = await r26.json();
+    const s26 = d26.stats?.[0]?.splits?.[0]?.stat;
+    if (s26) {
+      sb += parseInt(s26.stolenBases || 0);
+      cs += parseInt(s26.caughtStealing || 0);
+      pa += parseInt(s26.plateAppearances || 0);
+      hr += parseInt(s26.homeRuns || 0);
+      ab += parseInt(s26.atBats || 0);
     }
-    if (pa < 50) {
-      const r25 = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2025&group=hitting');
-      const d25 = await r25.json();
-      const s25 = d25.stats?.[0]?.splits?.[0]?.stat;
-      if (s25) {
-        sb = parseInt(s25.stolenBases || 0);
-        cs = parseInt(s25.caughtStealing || 0);
-        pa = parseInt(s25.plateAppearances || 0);
-        hr = parseInt(s25.homeRuns || 0);
-        ab = parseInt(s25.atBats || 0);
-      }
+    
+    // Also get 2025 stats and combine
+    const r25 = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2025&group=hitting');
+    const d25 = await r25.json();
+    const s25 = d25.stats?.[0]?.splits?.[0]?.stat;
+    if (s25) {
+      sb += parseInt(s25.stolenBases || 0);
+      cs += parseInt(s25.caughtStealing || 0);
+      pa += parseInt(s25.plateAppearances || 0);
+      hr += parseInt(s25.homeRuns || 0);
+      ab += parseInt(s25.atBats || 0);
     }
+    
     return { sb, cs, pa, hr, ab, attempts: sb + cs, successRate: (sb + cs) > 0 ? sb / (sb + cs) : null, hrPerPA: pa > 0 ? r3(hr / pa) : null };
   } catch(e) {
     return { sb: 0, cs: 0, pa: 0, hr: 0, ab: 0, attempts: 0, successRate: null, hrPerPA: null };
   }
 }
 
-// Fetch season-level Statcast stats (barrel%, hard hit%, avg EV, sprint speed)
-async function fetchSavantSeasonStats(playerId) {
-  try {
-    const url = 'https://baseballsavant.mlb.com/player-page/batted-ball-data?playerId=' + playerId + '&season=2026&type=batter&minBBE=10';
-    // Try the expected-stats endpoint which has barrel% pre-computed
-    const r = await fetch('https://baseballsavant.mlb.com/api/statcast/stats?playerId=' + playerId + '&position=B&season=2026');
-    if (!r.ok) return null;
-    const data = await r.json();
-    if (!data || !data.length) {
-      // Fall back to 2025
-      const r25 = await fetch('https://baseballsavant.mlb.com/api/statcast/stats?playerId=' + playerId + '&position=B&season=2025');
-      if (!r25.ok) return null;
-      const d25 = await r25.json();
-      if (!d25?.length) return null;
-      return parseSavantStats(d25[0]);
-    }
-    return parseSavantStats(data[0]);
-  } catch(e) {
-    return null;
-  }
-}
-
-function parseSavantStats(s) {
-  if (!s) return null;
-  return {
-    barrelPct: s.barrel_batted_rate != null ? r1(parseFloat(s.barrel_batted_rate)) : null,
-    hardHitPct: s.hard_hit_percent != null ? r1(parseFloat(s.hard_hit_percent)) : null,
-    avgEV: s.avg_hit_speed != null ? r1(parseFloat(s.avg_hit_speed)) : null,
-    avgLA: s.avg_hit_angle != null ? r1(parseFloat(s.avg_hit_angle)) : null,
-    sprintSpeed: s.sprint_speed != null ? r1(parseFloat(s.sprint_speed)) : null,
-    xwoba: s.xwoba != null ? r3(parseFloat(s.xwoba)) : null,
-    xba: s.xba != null ? r3(parseFloat(s.xba)) : null,
-    xslg: s.xslg != null ? r3(parseFloat(s.xslg)) : null,
-    xiso: s.xiso != null ? r3(parseFloat(s.xiso)) : null,
-    xobp: s.xobp != null ? r3(parseFloat(s.xobp)) : null,
-  };
-}
+// fetchSavantSeasonStats removed — using bulk Savant fetch instead
+// Sprint speed is the only thing we lose; can add back later if needed
 
 function parseCSV(text){
   if(!text||text.length<100)return null;
@@ -223,7 +191,7 @@ async function fetchSavantBulkHitter(pitcherHand) {
   const url = 'https://baseballsavant.mlb.com/statcast_search/csv?all=true' +
     '&player_type=batter' +
     '&pitcher_throws=' + pitcherHand +
-    '&hfSea=2025%7C' +
+    '&hfSea=2025%7C2026%7C' +
     '&group_by=name' +
     '&min_results=25' +
     '&type=details' +
@@ -348,9 +316,10 @@ async function main() {
 
       // Fetch stolen base data for this player
       const sbData = await fetchPlayerSBData(h.id);
-      
-      // Fetch season-level Statcast stats (barrel%, hard hit%, sprint speed, etc)
-      const savant = await fetchSavantSeasonStats(h.id);
+
+      // Get hand-specific Savant bulk stats for this hitter (already fetched in bulk)
+      const svR = savantVsR[h.id] || {};
+      const svL = savantVsL[h.id] || {};
 
       const sbFields = {
         sb_count: sbData.sb,
@@ -361,20 +330,8 @@ async function main() {
         season_hr: sbData.hr,
         season_ab: sbData.ab,
         season_hr_per_pa: sbData.hrPerPA,
-        sprint_speed: savant?.sprintSpeed || null,
-        season_barrel_pct: savant?.barrelPct || null,
-        season_hard_hit_pct: savant?.hardHitPct || null,
-        season_avg_ev: savant?.avgEV || null,
-        season_avg_la: savant?.avgLA || null,
-        season_xslg: savant?.xslg || null,
-        season_xiso: savant?.xiso || null,
-        season_xba: savant?.xba || null,
-        season_xwoba: savant?.xwoba || null,
+        sprint_speed: null, // TODO: add sprint speed source
       };
-
-      // Get hand-specific Savant bulk stats for this hitter
-      const svR = savantVsR[h.id] || {};
-      const svL = savantVsL[h.id] || {};
 
       if (splitsR && Object.keys(splitsR).length > 0) {
         await sbUpsert('edge_matchup_cache', {
