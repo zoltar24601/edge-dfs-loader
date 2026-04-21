@@ -216,9 +216,74 @@ async function fetchCSV(playerId, season) {
   return null;
 }
 
+// Bulk fetch pre-computed Savant stats for ALL hitters vs a pitcher hand
+async function fetchSavantBulkHitter(pitcherHand) {
+  const url = 'https://baseballsavant.mlb.com/statcast_search/csv?all=true' +
+    '&player_type=batter' +
+    '&pitcher_throws=' + pitcherHand +
+    '&hfSea=2025%7C' +
+    '&group_by=name' +
+    '&min_results=25' +
+    '&type=details' +
+    '&sort_col=pitches&sort_order=desc';
+  
+  console.log('Fetching Savant bulk: hitters vs', pitcherHand + 'HP...');
+  
+  for (let att = 0; att < 3; att++) {
+    try {
+      const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (!r.ok) { console.warn('Savant returned', r.status); await sleep(5000); continue; }
+      const text = await r.text();
+      if (!text || text.length < 200 || text.includes('<html')) { console.warn('Savant empty/html response'); await sleep(5000); continue; }
+      
+      const lines = text.trim().split('\n');
+      if (lines.length < 2) return {};
+      const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+      
+      const results = {};
+      for (let i = 1; i < lines.length; i++) {
+        const vals = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+        const row = {};
+        headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
+        
+        const playerId = parseInt(row.player_id || row.batter);
+        if (!playerId) continue;
+        
+        const pf = (field) => { const v = parseFloat(row[field]); return !isNaN(v) ? v : null; };
+        
+        results[playerId] = {
+          xslg: pf('xslg') != null ? r3(pf('xslg')) : null,
+          xba: pf('xba') != null ? r3(pf('xba')) : null,
+          xwoba: pf('xwoba') != null ? r3(pf('xwoba')) : null,
+          barrelPct: pf('barrel_batted_rate') != null ? r1(pf('barrel_batted_rate')) : null,
+          hardHitPct: pf('hard_hit_percent') != null ? r1(pf('hard_hit_percent')) : null,
+          avgEV: pf('launch_speed') != null ? r1(pf('launch_speed')) : null,
+        };
+      }
+      
+      console.log('Got', Object.keys(results).length, 'hitters vs', pitcherHand + 'HP');
+      return results;
+      
+    } catch(e) {
+      console.warn('Savant bulk hitter error:', e.message);
+      await sleep(5000 * (att + 1));
+    }
+  }
+  console.warn('Failed to fetch Savant bulk hitter data vs', pitcherHand);
+  return {};
+}
+
 async function main() {
   console.log('⚾ EDGE DFS HITTER LOADER — Node.js');
   console.log('Date:', today);
+
+  // STEP 0: Bulk fetch pre-computed Savant stats for ALL hitters by pitcher hand
+  // 2 API calls get xSLG, xBA, xwOBA, barrel%, hard hit% for every hitter
+  console.log('Fetching bulk Savant hitter stats...');
+  const savantVsR = await fetchSavantBulkHitter('R');
+  await sleep(3000);
+  const savantVsL = await fetchSavantBulkHitter('L');
+  await sleep(3000);
 
   // 1. Schedule
   console.log('Fetching schedule...');
@@ -301,6 +366,10 @@ async function main() {
         season_xwoba: savant?.xwoba || null,
       };
 
+      // Get hand-specific Savant bulk stats for this hitter
+      const svR = savantVsR[h.id] || {};
+      const svL = savantVsL[h.id] || {};
+
       if (splitsR && Object.keys(splitsR).length > 0) {
         await sbUpsert('edge_matchup_cache', {
           player_id: h.id, player_name: h.name, team: h.team, position: h.position,
@@ -313,6 +382,13 @@ async function main() {
           contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
           whiff_pct: streak?.whiffPct || null, avg_la: streak?.avgLA || null, fb_pct: streak?.fbPct || null,
           season_k_pct: seasonKvsR?.kPct || null, season_pa_vs_hand: seasonKvsR?.nPA || null,
+          // Pre-computed Savant stats vs RHP (NOT calculated)
+          season_xslg: svR.xslg || null,
+          season_xba: svR.xba || null,
+          season_xwoba: svR.xwoba || null,
+          season_barrel_pct: svR.barrelPct || null,
+          season_hard_hit_pct: svR.hardHitPct || null,
+          season_avg_ev: svR.avgEV || null,
           updated_at: new Date().toISOString(),
           ...sbFields
         }, 'player_id,pitcher_hand,season');
@@ -330,6 +406,13 @@ async function main() {
           contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
           whiff_pct: streak?.whiffPct || null, avg_la: streak?.avgLA || null, fb_pct: streak?.fbPct || null,
           season_k_pct: seasonKvsL?.kPct || null, season_pa_vs_hand: seasonKvsL?.nPA || null,
+          // Pre-computed Savant stats vs LHP (NOT calculated)
+          season_xslg: svL.xslg || null,
+          season_xba: svL.xba || null,
+          season_xwoba: svL.xwoba || null,
+          season_barrel_pct: svL.barrelPct || null,
+          season_hard_hit_pct: svL.hardHitPct || null,
+          season_avg_ev: svL.avgEV || null,
           updated_at: new Date().toISOString(),
           ...sbFields
         }, 'player_id,pitcher_hand,season');
