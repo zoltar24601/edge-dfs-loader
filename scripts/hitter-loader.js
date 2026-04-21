@@ -188,53 +188,62 @@ async function fetchCSV(playerId, season) {
 
 // Bulk fetch pre-computed Savant stats for ALL hitters vs a pitcher hand
 async function fetchSavantBulkHitter(pitcherHand) {
-  const url = 'https://baseballsavant.mlb.com/statcast_search/csv?all=true' +
+  // NOTE: Do NOT include type=details — that returns pitch-by-pitch instead of aggregated.
+  // hfGT=R%7C limits to regular-season games.
+  const url = 'https://baseballsavant.mlb.com/statcast_search/csv' +
+    '?hfGT=R%7C' +
+    '&hfSea=2026%7C2025%7C' +
     '&player_type=batter' +
     '&pitcher_throws=' + pitcherHand +
-    '&hfSea=2025%7C2026%7C' +
     '&group_by=name' +
-    '&min_results=25' +
-    '&type=details' +
+    '&min_pitches=0&min_results=0&min_pas=0' +
     '&sort_col=pitches&sort_order=desc';
-  
+
   console.log('Fetching Savant bulk: hitters vs', pitcherHand + 'HP...');
-  
+
   for (let att = 0; att < 3; att++) {
     try {
       const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
       if (!r.ok) { console.warn('Savant returned', r.status); await sleep(5000); continue; }
       const text = await r.text();
       if (!text || text.length < 200 || text.includes('<html')) { console.warn('Savant empty/html response'); await sleep(5000); continue; }
-      
+
       const lines = text.trim().split('\n');
       if (lines.length < 2) return {};
       const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
-      
+
       const results = {};
       for (let i = 1; i < lines.length; i++) {
         const vals = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
         const row = {};
         headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
-        
-        const playerId = parseInt(row.player_id || row.batter);
+
+        const playerId = parseInt(row.player_id);
         if (!playerId) continue;
-        
+
         const pf = (field) => { const v = parseFloat(row[field]); return !isNaN(v) ? v : null; };
-        
+        const pi = (field) => { const v = parseInt(row[field]); return !isNaN(v) ? v : null; };
+
         results[playerId] = {
           xslg: pf('xslg') != null ? r3(pf('xslg')) : null,
           xba: pf('xba') != null ? r3(pf('xba')) : null,
           xwoba: pf('xwoba') != null ? r3(pf('xwoba')) : null,
           xobp: pf('xobp') != null ? r3(pf('xobp')) : null,
-          barrelPct: pf('barrel_batted_rate') != null ? r1(pf('barrel_batted_rate')) : null,
-          hardHitPct: pf('hard_hit_percent') != null ? r1(pf('hard_hit_percent')) : null,
-          avgEV: pf('launch_speed') != null ? r1(pf('launch_speed')) : null,
+          barrelPct: pf('barrels_per_bbe_percent') != null ? r1(pf('barrels_per_bbe_percent')) : null,
+          hardHitPct: pf('hardhit_percent') != null ? r1(pf('hardhit_percent')) : null,
+          kPct: pf('k_percent') != null ? r1(pf('k_percent')) : null,
+          bbPct: pf('bb_percent') != null ? r1(pf('bb_percent')) : null,
+          pa: pi('pa'),
+          hrs: pi('hrs'),
+          singles: pi('singles'),
+          doubles: pi('doubles'),
+          triples: pi('triples'),
         };
       }
-      
+
       console.log('Got', Object.keys(results).length, 'hitters vs', pitcherHand + 'HP');
       return results;
-      
+
     } catch(e) {
       console.warn('Savant bulk hitter error:', e.message);
       await sleep(5000 * (att + 1));
@@ -352,7 +361,8 @@ async function main() {
           season_xobp: svR.xobp || null,
           season_barrel_pct: svR.barrelPct || null,
           season_hard_hit_pct: svR.hardHitPct || null,
-          season_avg_ev: svR.avgEV || null,
+          season_hr_vs_hand: svR.hrs != null ? svR.hrs : null,
+          season_pa_vs_hand_bulk: svR.pa != null ? svR.pa : null,
           updated_at: new Date().toISOString(),
           ...sbFields
         }, 'player_id,pitcher_hand,season');
@@ -377,7 +387,8 @@ async function main() {
           season_xobp: svL.xobp || null,
           season_barrel_pct: svL.barrelPct || null,
           season_hard_hit_pct: svL.hardHitPct || null,
-          season_avg_ev: svL.avgEV || null,
+          season_hr_vs_hand: svL.hrs != null ? svL.hrs : null,
+          season_pa_vs_hand_bulk: svL.pa != null ? svL.pa : null,
           updated_at: new Date().toISOString(),
           ...sbFields
         }, 'player_id,pitcher_hand,season');
