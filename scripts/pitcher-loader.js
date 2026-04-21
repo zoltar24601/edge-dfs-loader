@@ -26,57 +26,60 @@ const LABELS = {FF:'4-Seam FB',SI:'Sinker',FC:'Cutter',FA:'Fastball',SL:'Slider'
 //  2 API calls get ALL pitchers at once (vs RHB, vs LHB)
 // ============================================================
 
-async function fetchSavantBulk(playerType, batterHand, season) {
-  const url = 'https://baseballsavant.mlb.com/statcast_search/csv?all=true' +
+async function fetchSavantBulk(playerType, batterHand) {
+  // NOTE: Do NOT include type=details — that returns pitch-by-pitch instead of aggregated.
+  // hfGT=R%7C limits to regular-season games.
+  const url = 'https://baseballsavant.mlb.com/statcast_search/csv' +
+    '?hfGT=R%7C' +
+    '&hfSea=2026%7C2025%7C' +
     '&player_type=' + playerType +
     '&batter_stands=' + batterHand +
-    '&hfSea=' + season + '%7C' +
     '&group_by=name' +
-    '&min_results=25' +
-    '&type=details' +
+    '&min_pitches=0&min_results=0&min_pas=0' +
     '&sort_col=pitches&sort_order=desc';
-  
+
   console.log('Fetching Savant bulk:', playerType, 'vs', batterHand + 'HB...');
-  
+
   for (let att = 0; att < 3; att++) {
     try {
       const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
       if (!r.ok) { console.warn('Savant returned', r.status); await sleep(5000); continue; }
       const text = await r.text();
-      if (!text || text.length < 200) { console.warn('Savant empty response'); await sleep(5000); continue; }
-      
+      if (!text || text.length < 200 || text.includes('<html')) { console.warn('Savant empty/html response'); await sleep(5000); continue; }
+
       const lines = text.trim().split('\n');
       if (lines.length < 2) return {};
       const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
-      
+
       const results = {};
       for (let i = 1; i < lines.length; i++) {
         const vals = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
         const row = {};
         headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
-        
-        const playerId = parseInt(row.player_id || row.pitcher || row.batter);
+
+        const playerId = parseInt(row.player_id);
         if (!playerId) continue;
-        
+
         const pf = (field) => { const v = parseFloat(row[field]); return !isNaN(v) ? v : null; };
-        
+
         results[playerId] = {
           playerId,
           playerName: row.player_name || '',
           xslg: pf('xslg') != null ? r3(pf('xslg')) : null,
           xba: pf('xba') != null ? r3(pf('xba')) : null,
           xwoba: pf('xwoba') != null ? r3(pf('xwoba')) : null,
-          slg: pf('slg_percent') != null ? r3(pf('slg_percent')) : null,
-          barrelPct: pf('barrel_batted_rate') != null ? r1(pf('barrel_batted_rate')) : null,
-          hardHitPct: pf('hard_hit_percent') != null ? r1(pf('hard_hit_percent')) : null,
-          avgEV: pf('launch_speed') != null ? r1(pf('launch_speed')) : null,
-          fbPct: pf('fly_ball_percent') != null ? r1(pf('fly_ball_percent')) : null,
+          xobp: pf('xobp') != null ? r3(pf('xobp')) : null,
+          barrelPct: pf('barrels_per_bbe_percent') != null ? r1(pf('barrels_per_bbe_percent')) : null,
+          hardHitPct: pf('hardhit_percent') != null ? r1(pf('hardhit_percent')) : null,
+          kPct: pf('k_percent') != null ? r1(pf('k_percent')) : null,
+          bbPct: pf('bb_percent') != null ? r1(pf('bb_percent')) : null,
+          pa: pf('pa') != null ? parseInt(pf('pa')) : null,
         };
       }
-      
+
       console.log('Got', Object.keys(results).length, playerType + 's vs', batterHand + 'HB');
       return results;
-      
+
     } catch(e) {
       console.warn('Savant fetch error:', e.message);
       await sleep(5000 * (att + 1));
@@ -185,9 +188,9 @@ async function main() {
   console.log('⚾ EDGE DFS PITCHER LOADER v2 — Pre-computed Savant stats');
 
   // STEP 1: Bulk fetch pre-computed Savant stats (2 calls for all pitchers)
-  const savantVsR = await fetchSavantBulk('pitcher', 'R', '2025%7C2026');
+  const savantVsR = await fetchSavantBulk('pitcher', 'R');
   await sleep(3000);
-  const savantVsL = await fetchSavantBulk('pitcher', 'L', '2025%7C2026');
+  const savantVsL = await fetchSavantBulk('pitcher', 'L');
   await sleep(3000);
 
   // STEP 2: Get all pitcher rosters
@@ -261,16 +264,10 @@ async function main() {
         xwoba_vs_l: svL.xwoba || null,
         xslg_allowed_r: svR.xslg || null,
         xslg_allowed_l: svL.xslg || null,
-        slg_allowed_r: svR.slg || null,
-        slg_allowed_l: svL.slg || null,
         barrel_pct_allowed_r: svR.barrelPct || null,
         barrel_pct_allowed_l: svL.barrelPct || null,
         hard_hit_pct_vs_r: svR.hardHitPct || null,
         hard_hit_pct_vs_l: svL.hardHitPct || null,
-        avg_ev_allowed_r: svR.avgEV || null,
-        avg_ev_allowed_l: svL.avgEV || null,
-        fb_pct_r: svR.fbPct || null,
-        fb_pct_l: svL.fbPct || null,
         // MLB API season stats
         sb_allowed: ext?.sb || 0,
         cs_caught: ext?.cs || 0,
