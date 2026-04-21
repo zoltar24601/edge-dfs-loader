@@ -233,12 +233,12 @@ async function main() {
         continue;
       }
 
-      let era = null, whip = null, kPer9 = null, bbPer9 = null, mlbIp = null;
+      let era = null, whip = null, kPer9 = null, bbPer9 = null, mlbIp = null, hrPer9 = null;
       try {
         const sr = await fetch(MLB + '/people/' + p.id + '/stats?stats=season&season=2025&group=pitching');
         const sd = await sr.json();
         const st = sd.stats?.[0]?.splits?.[0]?.stat;
-        if (st) { era = parseFloat(st.era)||null; whip = parseFloat(st.whip)||null; kPer9 = parseFloat(st.strikeoutsPer9Inn)||null; bbPer9 = parseFloat(st.walksPer9Inn)||null; mlbIp = st.inningsPitched||null; }
+        if (st) { era = parseFloat(st.era)||null; whip = parseFloat(st.whip)||null; kPer9 = parseFloat(st.strikeoutsPer9Inn)||null; bbPer9 = parseFloat(st.walksPer9Inn)||null; mlbIp = st.inningsPitched||null; hrPer9 = parseFloat(st.homeRunsPer9Inn)||null; }
       } catch(e) {}
 
       const ext = await fetchPitcherSeasonStats(p.id);
@@ -246,7 +246,7 @@ async function main() {
       await sbUpsert('edge_pitcher_cache', {
         pitcher_id: p.id, pitcher_name: p.name, team: p.team, hand: p.hand, season: 2025,
         arsenal: arsenalAll, arsenal_vs_r: arsenalVsR, arsenal_vs_l: arsenalVsL,
-        era, whip, k_per_9: kPer9, bb_per_9: bbPer9, ip: mlbIp,
+        era, whip, k_per_9: kPer9, bb_per_9: bbPer9, ip: mlbIp, hr_per_9: hrPer9,
         // Pre-computed from Savant bulk (NOT calculated)
         xwoba_vs_r: svR.xwoba || null,
         xwoba_vs_l: svL.xwoba || null,
