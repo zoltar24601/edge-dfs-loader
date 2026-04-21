@@ -152,31 +152,32 @@ async function fetchCSV(playerId, season) {
 
 async function fetchPitcherSeasonStats(pitcherId) {
   try {
-    let stats = null, season = 2026;
-    const r26 = await fetch(MLB + '/people/' + pitcherId + '/stats?stats=season&season=2026&group=pitching');
-    const d26 = await r26.json();
-    stats = d26.stats?.[0]?.splits?.[0]?.stat;
-    let ip = stats ? parseFloat(stats.inningsPitched || 0) : 0;
-    if (ip < 10) {
-      const r25 = await fetch(MLB + '/people/' + pitcherId + '/stats?stats=season&season=2025&group=pitching');
-      const d25 = await r25.json();
-      stats = d25.stats?.[0]?.splits?.[0]?.stat;
-      season = 2025;
+    let sb = 0, cs = 0, ipTotal = 0, gs = 0, gp = 0, bf = 0;
+    
+    // Combine 2025 + 2026
+    for (const yr of [2026, 2025]) {
+      const r = await fetch(MLB + '/people/' + pitcherId + '/stats?stats=season&season=' + yr + '&group=pitching');
+      const d = await r.json();
+      const st = d.stats?.[0]?.splits?.[0]?.stat;
+      if (st) {
+        sb += parseInt(st.stolenBases || 0);
+        cs += parseInt(st.caughtStealing || 0);
+        ipTotal += parseFloat(st.inningsPitched || 0);
+        gs += parseInt(st.gamesStarted || 0);
+        gp += parseInt(st.gamesPitched || 0);
+        bf += parseInt(st.battersFaced || 0);
+      }
     }
-    if (!stats) return null;
-    const sb = parseInt(stats.stolenBases || 0);
-    const cs = parseInt(stats.caughtStealing || 0);
-    const ipStr = stats.inningsPitched || '0';
-    const gs = parseInt(stats.gamesStarted || 0);
-    const bf = parseInt(stats.battersFaced || 0);
+    
+    if (ipTotal === 0) return null;
     let avgIpPerStart = null, avgBfPerStart = null;
     if (gs >= 3) {
-      avgIpPerStart = parseFloat(ipStr) / gs;
+      avgIpPerStart = ipTotal / gs;
       avgBfPerStart = bf / gs;
       if (avgIpPerStart < 4.0 || avgIpPerStart > 8.0) avgIpPerStart = null;
       if (avgBfPerStart < 18 || avgBfPerStart > 30) avgBfPerStart = null;
     }
-    return { sb, cs, ip: ipStr, gs, gp: parseInt(stats.gamesPitched || 0), bf, avgIpPerStart, avgBfPerStart };
+    return { sb, cs, ip: String(ipTotal), gs, gp, bf, avgIpPerStart, avgBfPerStart };
   } catch(e) { return null; }
 }
 
@@ -184,9 +185,9 @@ async function main() {
   console.log('⚾ EDGE DFS PITCHER LOADER v2 — Pre-computed Savant stats');
 
   // STEP 1: Bulk fetch pre-computed Savant stats (2 calls for all pitchers)
-  const savantVsR = await fetchSavantBulk('pitcher', 'R', '2025');
+  const savantVsR = await fetchSavantBulk('pitcher', 'R', '2025%7C2026');
   await sleep(3000);
-  const savantVsL = await fetchSavantBulk('pitcher', 'L', '2025');
+  const savantVsL = await fetchSavantBulk('pitcher', 'L', '2025%7C2026');
   await sleep(3000);
 
   // STEP 2: Get all pitcher rosters
@@ -235,10 +236,18 @@ async function main() {
 
       let era = null, whip = null, kPer9 = null, bbPer9 = null, mlbIp = null, hrPer9 = null;
       try {
-        const sr = await fetch(MLB + '/people/' + p.id + '/stats?stats=season&season=2025&group=pitching');
-        const sd = await sr.json();
-        const st = sd.stats?.[0]?.splits?.[0]?.stat;
-        if (st) { era = parseFloat(st.era)||null; whip = parseFloat(st.whip)||null; kPer9 = parseFloat(st.strikeoutsPer9Inn)||null; bbPer9 = parseFloat(st.walksPer9Inn)||null; mlbIp = st.inningsPitched||null; hrPer9 = parseFloat(st.homeRunsPer9Inn)||null; }
+        // Use most recent season for rate stats (2026 first, fallback 2025)
+        for (const yr of [2026, 2025]) {
+          const sr = await fetch(MLB + '/people/' + p.id + '/stats?stats=season&season=' + yr + '&group=pitching');
+          const sd = await sr.json();
+          const st = sd.stats?.[0]?.splits?.[0]?.stat;
+          if (st && parseFloat(st.inningsPitched || 0) >= 10) {
+            era = parseFloat(st.era)||null; whip = parseFloat(st.whip)||null;
+            kPer9 = parseFloat(st.strikeoutsPer9Inn)||null; bbPer9 = parseFloat(st.walksPer9Inn)||null;
+            mlbIp = st.inningsPitched||null; hrPer9 = parseFloat(st.homeRunsPer9Inn)||null;
+            break;
+          }
+        }
       } catch(e) {}
 
       const ext = await fetchPitcherSeasonStats(p.id);
