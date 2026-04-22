@@ -156,6 +156,7 @@ async function fetchCSV(playerId, season) {
 async function fetchPitcherSeasonStats(pitcherId) {
   try {
     let sb = 0, cs = 0, ipTotal = 0, gs = 0, gp = 0, bf = 0;
+    let hr = 0, er = 0, ks = 0, bbs = 0, hits = 0;
     
     // Combine 2025 + 2026
     for (const yr of [2026, 2025]) {
@@ -169,10 +170,27 @@ async function fetchPitcherSeasonStats(pitcherId) {
         gs += parseInt(st.gamesStarted || 0);
         gp += parseInt(st.gamesPitched || 0);
         bf += parseInt(st.battersFaced || 0);
+        hr += parseInt(st.homeRuns || 0);
+        er += parseInt(st.earnedRuns || 0);
+        ks += parseInt(st.strikeOuts || 0);
+        bbs += parseInt(st.baseOnBalls || 0);
+        hits += parseInt(st.hits || 0);
       }
     }
     
     if (ipTotal === 0) return null;
+    
+    // Rate stats from TOTALS across both seasons (not cherry-picked from one year)
+    // Require 5+ IP combined for rate stats — below that, numbers are noise
+    let era = null, whip = null, kPer9 = null, bbPer9 = null, hrPer9 = null;
+    if (ipTotal >= 5) {
+      era = (er * 9) / ipTotal;
+      whip = (bbs + hits) / ipTotal;
+      kPer9 = (ks * 9) / ipTotal;
+      bbPer9 = (bbs * 9) / ipTotal;
+      hrPer9 = (hr * 9) / ipTotal;
+    }
+    
     let avgIpPerStart = null, avgBfPerStart = null;
     if (gs >= 3) {
       avgIpPerStart = ipTotal / gs;
@@ -180,7 +198,9 @@ async function fetchPitcherSeasonStats(pitcherId) {
       if (avgIpPerStart < 4.0 || avgIpPerStart > 8.0) avgIpPerStart = null;
       if (avgBfPerStart < 18 || avgBfPerStart > 30) avgBfPerStart = null;
     }
-    return { sb, cs, ip: String(ipTotal), gs, gp, bf, avgIpPerStart, avgBfPerStart };
+    return { sb, cs, ip: String(ipTotal), gs, gp, bf, hr, er, ks, bbs, hits,
+             era, whip, kPer9, bbPer9, hrPer9,
+             avgIpPerStart, avgBfPerStart };
   } catch(e) { return null; }
 }
 
@@ -237,28 +257,20 @@ async function main() {
         continue;
       }
 
-      let era = null, whip = null, kPer9 = null, bbPer9 = null, mlbIp = null, hrPer9 = null;
-      try {
-        // Use most recent season for rate stats (2026 first, fallback 2025)
-        for (const yr of [2026, 2025]) {
-          const sr = await fetch(MLB + '/people/' + p.id + '/stats?stats=season&season=' + yr + '&group=pitching');
-          const sd = await sr.json();
-          const st = sd.stats?.[0]?.splits?.[0]?.stat;
-          if (st && parseFloat(st.inningsPitched || 0) >= 10) {
-            era = parseFloat(st.era)||null; whip = parseFloat(st.whip)||null;
-            kPer9 = parseFloat(st.strikeoutsPer9Inn)||null; bbPer9 = parseFloat(st.walksPer9Inn)||null;
-            mlbIp = st.inningsPitched||null; hrPer9 = parseFloat(st.homeRunsPer9Inn)||null;
-            break;
-          }
-        }
-      } catch(e) {}
-
+      // Rate stats now come from fetchPitcherSeasonStats — combined 2025+2026 totals
+      // (Old code took whichever single season had >=10 IP, which ignored the other year's data
+      // AND left relievers with <10 IP in either season with null rates.)
       const ext = await fetchPitcherSeasonStats(p.id);
 
       await sbUpsert('edge_pitcher_cache', {
         pitcher_id: p.id, pitcher_name: p.name, team: p.team, hand: p.hand, season: 2025,
         arsenal: arsenalAll, arsenal_vs_r: arsenalVsR, arsenal_vs_l: arsenalVsL,
-        era, whip, k_per_9: kPer9, bb_per_9: bbPer9, ip: mlbIp, hr_per_9: hrPer9,
+        era: ext?.era != null ? r3(ext.era) : null,
+        whip: ext?.whip != null ? r3(ext.whip) : null,
+        k_per_9: ext?.kPer9 != null ? r1(ext.kPer9) : null,
+        bb_per_9: ext?.bbPer9 != null ? r1(ext.bbPer9) : null,
+        ip: ext?.ip || null,
+        hr_per_9: ext?.hrPer9 != null ? r1(ext.hrPer9) : null,
         // Pre-computed from Savant bulk (NOT calculated)
         xwoba_vs_r: svR.xwoba || null,
         xwoba_vs_l: svL.xwoba || null,
