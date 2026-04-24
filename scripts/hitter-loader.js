@@ -345,12 +345,16 @@ async function fetchSavantBulkHitter(pitcherHand) {
 
         const pf = (field) => { const v = parseFloat(row[field]); return !isNaN(v) ? v : null; };
         const pi = (field) => { const v = parseInt(row[field]); return !isNaN(v) ? v : null; };
+        // Sanity guard: rate stats (xslg, xba, xwoba, xobp) must be in [0, 1].
+        // Savant sometimes returns garbage for partial-season / call-up players
+        // (values like 3.838 or 1.74 were observed). Null-out anything outside range.
+        const safeRate = (v) => (v != null && v >= 0 && v <= 1) ? v : null;
 
         results[playerId] = {
-          xslg: pf('xslg') != null ? r3(pf('xslg')) : null,
-          xba: pf('xba') != null ? r3(pf('xba')) : null,
-          xwoba: pf('xwoba') != null ? r3(pf('xwoba')) : null,
-          xobp: pf('xobp') != null ? r3(pf('xobp')) : null,
+          xslg: safeRate(pf('xslg')) != null ? r3(pf('xslg')) : null,
+          xba: safeRate(pf('xba')) != null ? r3(pf('xba')) : null,
+          xwoba: safeRate(pf('xwoba')) != null ? r3(pf('xwoba')) : null,
+          xobp: safeRate(pf('xobp')) != null ? r3(pf('xobp')) : null,
           barrelPct: pf('barrels_per_bbe_percent') != null ? r1(pf('barrels_per_bbe_percent')) : null,
           hardHitPct: pf('hardhit_percent') != null ? r1(pf('hardhit_percent')) : null,
           kPct: pf('k_percent') != null ? r1(pf('k_percent')) : null,
