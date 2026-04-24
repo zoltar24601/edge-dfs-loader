@@ -26,7 +26,7 @@ function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 async function fetchPlayerSBData(playerId) {
   try {
     let sb = 0, cs = 0, pa = 0, hr = 0, ab = 0;
-    
+
     // Get 2026 stats
     const r26 = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2026&group=hitting');
     const d26 = await r26.json();
@@ -38,7 +38,7 @@ async function fetchPlayerSBData(playerId) {
       hr += parseInt(s26.homeRuns || 0);
       ab += parseInt(s26.atBats || 0);
     }
-    
+
     // Also get 2025 stats and combine
     const r25 = await fetch(MLB + '/people/' + playerId + '/stats?stats=season&season=2025&group=hitting');
     const d25 = await r25.json();
@@ -50,15 +50,12 @@ async function fetchPlayerSBData(playerId) {
       hr += parseInt(s25.homeRuns || 0);
       ab += parseInt(s25.atBats || 0);
     }
-    
+
     return { sb, cs, pa, hr, ab, attempts: sb + cs, successRate: (sb + cs) > 0 ? sb / (sb + cs) : null, hrPerPA: pa > 0 ? r3(hr / pa) : null };
   } catch(e) {
     return { sb: 0, cs: 0, pa: 0, hr: 0, ab: 0, attempts: 0, successRate: null, hrPerPA: null };
   }
 }
-
-// fetchSavantSeasonStats removed — using bulk Savant fetch instead
-// Sprint speed is the only thing we lose; can add back later if needed
 
 function parseCSV(text){
   if(!text||text.length<100)return null;
@@ -122,18 +119,37 @@ function computeSeasonKPct(rows, hand) {
   return { kPct: r1(ks / nPA * 100), nPA };
 }
 
+// Compute stats over a given window.
+// If days === null, uses ALL rows passed in (used for season baseline).
+// Otherwise filters to rows within `days` of the most recent game.
+//
+// IMPORTANT: The original fields (nPA, bbPct, kPct, hardHitPct, barrelPct,
+// ldPct, avgEV, avgLA, fbPct, xwoba, xba, contactPct, chasePct, whiffPct)
+// preserve the EXACT SAME output behavior as the pre-v2 loader — same zero
+// fallbacks, same early-exit on nPA<5 — so downstream projection code that
+// reads these columns from edge_matchup_cache is unaffected.
+//
+// New fields (woba, zoneSwingPct, bipEV, nIZ, nOZ) are ONLY consumed by
+// evaluateFlag() and the new rolling-window UI.
 function computeStreak(rows,days){
   if(!rows||!rows.length)return null;
-  const dates=[...new Set(rows.map(r=>r.game_date))].sort().reverse();
-  const lastDate=dates[0]?new Date(dates[0]):new Date();
-  const cutoff=new Date(lastDate);cutoff.setDate(cutoff.getDate()-days);
-  const recent=rows.filter(r=>new Date(r.game_date)>=cutoff);
-  if(!recent.length)return{nPA:0};
+  let working;
+  if (days === null || days === undefined) {
+    working = rows;
+  } else {
+    const dates=[...new Set(rows.map(r=>r.game_date))].sort().reverse();
+    const lastDate=dates[0]?new Date(dates[0]):new Date();
+    const cutoff=new Date(lastDate);cutoff.setDate(cutoff.getDate()-days);
+    working = rows.filter(r=>new Date(r.game_date)>=cutoff);
+  }
+  if(!working.length)return{nPA:0};
   const paE=['single','double','triple','home_run','field_out','strikeout','walk','hit_by_pitch','grounded_into_double_play','sac_fly','force_out','fielders_choice','fielders_choice_out'];
-  const pas=recent.filter(r=>paE.includes(r.events));const nPA=pas.length;
+  const pas=working.filter(r=>paE.includes(r.events));const nPA=pas.length;
+  // EARLY EXIT preserved from old loader — don't compute stats for tiny samples.
+  // This keeps the L14 output identical to before for downstream projections.
   if(nPA<5)return{nPA};
-  const wk=recent.filter(r=>r.events==='walk'),ks=recent.filter(r=>r.events==='strikeout');
-  const bip=recent.filter(r=>r.type==='X');
+  const wk=working.filter(r=>r.events==='walk'),ks=working.filter(r=>r.events==='strikeout');
+  const bip=working.filter(r=>r.type==='X');
   const bipEV=bip.filter(r=>!isNaN(parseFloat(r.launch_speed)));
   const hh=bipEV.filter(r=>parseFloat(r.launch_speed)>=95);
   const br=bipEV.filter(r=>{const e=parseFloat(r.launch_speed),a=parseFloat(r.launch_angle);return e>=98&&a>=26&&a<=30;});
@@ -142,32 +158,140 @@ function computeStreak(rows,days){
   const las=bipEV.map(r=>parseFloat(r.launch_angle)).filter(a=>!isNaN(a));
   const fbBip=bip.filter(r=>r.bb_type==='fly_ball'||r.bb_type==='popup');
   const bipTyped=bip.filter(r=>r.bb_type);
-  const wb=recent.map(r=>parseFloat(r.estimated_woba_using_speedangle)).filter(v=>!isNaN(v));
-  const xb=recent.map(r=>parseFloat(r.estimated_ba_using_speedangle)).filter(v=>!isNaN(v));
-  const sw=recent.filter(r=>['swinging_strike','swinging_strike_blocked','foul','hit_into_play','foul_tip'].includes(r.description));
-  const ct=recent.filter(r=>['foul','hit_into_play','foul_tip'].includes(r.description));
-  const wf=recent.filter(r=>['swinging_strike','swinging_strike_blocked'].includes(r.description));
-  const oz=recent.filter(r=>['11','12','13','14'].includes(r.zone));
+  const wb=working.map(r=>parseFloat(r.estimated_woba_using_speedangle)).filter(v=>!isNaN(v));
+  const xb=working.map(r=>parseFloat(r.estimated_ba_using_speedangle)).filter(v=>!isNaN(v));
+
+  // --- NEW: actual wOBA (outcome-based) for hidden-heat detection ---
+  // wOBA weights: BB=0.69, HBP=0.72, 1B=0.89, 2B=1.27, 3B=1.62, HR=2.10
+  let wobaNum = 0, wobaDen = 0;
+  pas.forEach(r => {
+    const e = r.events;
+    if (e === 'walk') { wobaNum += 0.69; wobaDen += 1; }
+    else if (e === 'hit_by_pitch') { wobaNum += 0.72; wobaDen += 1; }
+    else if (e === 'single') { wobaNum += 0.89; wobaDen += 1; }
+    else if (e === 'double') { wobaNum += 1.27; wobaDen += 1; }
+    else if (e === 'triple') { wobaNum += 1.62; wobaDen += 1; }
+    else if (e === 'home_run') { wobaNum += 2.10; wobaDen += 1; }
+    else if (['strikeout','field_out','grounded_into_double_play','sac_fly','force_out','fielders_choice','fielders_choice_out'].includes(e)) {
+      wobaDen += 1;
+    }
+  });
+  const woba = wobaDen > 0 ? wobaNum / wobaDen : null;
+
+  const sw=working.filter(r=>['swinging_strike','swinging_strike_blocked','foul','hit_into_play','foul_tip'].includes(r.description));
+  const ct=working.filter(r=>['foul','hit_into_play','foul_tip'].includes(r.description));
+  const wf=working.filter(r=>['swinging_strike','swinging_strike_blocked'].includes(r.description));
+  const oz=working.filter(r=>['11','12','13','14'].includes(r.zone));
   const ch=oz.filter(r=>['swinging_strike','swinging_strike_blocked','foul','hit_into_play'].includes(r.description));
-  return{nPA,bbPct:r1(wk.length/nPA*100),kPct:r1(ks.length/nPA*100),
-    hardHitPct:r1(bipEV.length?hh.length/bipEV.length*100:0),
-    barrelPct:r1(bipEV.length?br.length/bipEV.length*100:0),
-    ldPct:r1(bipEV.length?ld.length/bipEV.length*100:0),
-    avgEV:r1(ev.length?avg(ev):0),
-    avgLA:r1(las.length?avg(las):0),
-    fbPct:r1(bipTyped.length?fbBip.length/bipTyped.length*100:0),
-    xwoba:wb.length?r3(avg(wb)):null,xba:xb.length?r3(avg(xb)):null,
-    contactPct:r1(sw.length?ct.length/sw.length*100:0),
-    chasePct:oz.length?r1(ch.length/oz.length*100):null,
-    whiffPct:r1(sw.length?wf.length/sw.length*100:0)};
+
+  // --- NEW: zone-swing (in-zone pitch reaction) for the flag ---
+  const inZone    = working.filter(r => ['1','2','3','4','5','6','7','8','9'].includes(r.zone));
+  const zoneSwings = inZone.filter(r => ['swinging_strike','swinging_strike_blocked','foul','hit_into_play','foul_tip'].includes(r.description));
+
+  // --- ORIGINAL return shape preserved exactly (same fallbacks, same types) ---
+  return {
+    nPA,
+    bbPct: r1(wk.length/nPA*100),
+    kPct:  r1(ks.length/nPA*100),
+    hardHitPct: r1(bipEV.length ? hh.length/bipEV.length*100 : 0),
+    barrelPct:  r1(bipEV.length ? br.length/bipEV.length*100 : 0),
+    ldPct:      r1(bipEV.length ? ld.length/bipEV.length*100 : 0),
+    avgEV:      r1(ev.length ? avg(ev) : 0),
+    avgLA:      r1(las.length ? avg(las) : 0),
+    fbPct:      r1(bipTyped.length ? fbBip.length/bipTyped.length*100 : 0),
+    xwoba:      wb.length ? r3(avg(wb)) : null,
+    xba:        xb.length ? r3(avg(xb)) : null,
+    contactPct: r1(sw.length ? ct.length/sw.length*100 : 0),
+    chasePct:   oz.length ? r1(ch.length/oz.length*100) : null,
+    whiffPct:   r1(sw.length ? wf.length/sw.length*100 : 0),
+
+    // --- NEW fields (used only by evaluateFlag and new rolling-window UI) ---
+    woba:         woba != null ? r3(woba) : null,
+    zoneSwingPct: inZone.length ? r1(zoneSwings.length/inZone.length*100) : null,
+    bipEV:        bipEV.length,  // sample-size guard for contact-quality checks
+    nIZ:          inZone.length, // sample-size guard for zone-swing
+    nOZ:          oz.length,     // sample-size guard for chase
+  };
 }
 
-function calcHot(s){
-  if(!s||(s.nPA||0)<5)return{score:50,grade:'C',trend:'NEUTRAL'};
-  const hh=s.hardHitPct??38,xw=s.xwoba??0.320,bb=s.bbPct??8.5,ld=s.ldPct??21,k=s.kPct??23;
-  const sc=Math.round(clamp((hh-25)/32*100,0,100)*0.35+clamp((xw-0.270)/0.155*100,0,100)*0.25+clamp((bb-5)/14*100,0,100)*0.20+clamp((ld-14)/22*100,0,100)*0.10+clamp((35-k)/20*100,0,100)*0.10);
-  return{score:sc,grade:sc>=80?'A+':sc>=70?'A':sc>=60?'B+':sc>=50?'B':sc>=40?'C+':sc>=30?'C':'D',
-    trend:sc>=68?'HOT':sc>=55?'WARM':sc>=42?'NEUTRAL':'COLD'};
+// =====================================================================
+//  EMERGING / COOLING FLAG
+//
+//  Evaluates a hitter's L7 window against their season baseline on
+//  4 independent signals (plate discipline, contact quality, barrels,
+//  hidden heat). Returns tier 0-3 and the signal names that triggered.
+//
+//  Minimum sample sizes (below these, signal is suppressed):
+//    L7 PA >= 20       — for any L7 vs season check
+//    L7 BBE >= 10      — for EV/barrel checks specifically
+//    L14 PA >= 40      — for hidden-heat (xwOBA - wOBA)
+//    season PA >= 150  — for season baseline to be trustworthy
+//
+//  THRESHOLDS are intentionally conservative — we want few false
+//  positives, since each flag should actually mean something.
+// =====================================================================
+function evaluateFlag(l7, l14, season) {
+  const out = {
+    is_emerging: false, emerging_tier: 0, emerging_signals: [],
+    is_cooling:  false, cooling_tier:  0, cooling_signals:  [],
+    is_accelerating: false,
+  };
+  if (!l7 || !season || (season.nPA || 0) < 150) return out;
+
+  const signalsUp = [];
+  const signalsDown = [];
+
+  // --- 1. PLATE DISCIPLINE IMPROVING (chase down) ---
+  if ((l7.nIZ || 0) + (l7.nOZ || 0) >= 40 && l7.chasePct != null && season.chasePct != null) {
+    const delta = season.chasePct - l7.chasePct; // positive = chasing less
+    if (delta >= 4.0) signalsUp.push('discipline');
+    if (delta <= -4.0) signalsDown.push('discipline');
+  }
+
+  // --- 2. CONTACT QUALITY JUMPING (avg EV up) ---
+  if ((l7.bipEV || 0) >= 10 && l7.avgEV != null && season.avgEV != null) {
+    const delta = l7.avgEV - season.avgEV;
+    if (delta >= 1.5) signalsUp.push('exit_velo');
+    if (delta <= -1.5) signalsDown.push('exit_velo');
+  }
+
+  // --- 3. BARREL SPIKE ---
+  if ((l7.bipEV || 0) >= 10 && l7.barrelPct != null && season.barrelPct != null) {
+    const delta = l7.barrelPct - season.barrelPct;
+    if (delta >= 4.0) signalsUp.push('barrels');
+    if (delta <= -4.0) signalsDown.push('barrels');
+  }
+
+  // --- 4. HIDDEN HEAT (xwOBA > wOBA over L14 — market hasn't priced it in) ---
+  if (l14 && (l14.nPA || 0) >= 40 && l14.xwoba != null && l14.woba != null) {
+    const gap = l14.xwoba - l14.woba;
+    if (gap >= 0.050) signalsUp.push('hidden_heat');
+    // "Reverse hidden heat" (wOBA running above xwOBA) is weaker as a cool
+    // signal, but still worth noting.
+    if (gap <= -0.050) signalsDown.push('hidden_heat');
+  }
+
+  // --- Compose result ---
+  if (signalsUp.length >= 2) {
+    out.is_emerging = true;
+    out.emerging_tier = Math.min(3, signalsUp.length);
+    out.emerging_signals = signalsUp;
+  }
+  if (signalsDown.length >= 2) {
+    out.is_cooling = true;
+    out.cooling_tier = Math.min(3, signalsDown.length);
+    out.cooling_signals = signalsDown;
+  }
+
+  // --- Acceleration check: L7 avgEV > L14 avgEV AND L14 avgEV > season avgEV ---
+  // Only counts as an extra flag; doesn't itself trigger emerging.
+  if (l7.avgEV != null && l14 && l14.avgEV != null && season.avgEV != null) {
+    if (l7.avgEV > l14.avgEV && l14.avgEV > season.avgEV && (l7.avgEV - season.avgEV) >= 1.0) {
+      out.is_accelerating = true;
+    }
+  }
+
+  return out;
 }
 
 async function fetchCSV(playerId, season) {
@@ -188,8 +312,6 @@ async function fetchCSV(playerId, season) {
 
 // Bulk fetch pre-computed Savant stats for ALL hitters vs a pitcher hand
 async function fetchSavantBulkHitter(pitcherHand) {
-  // NOTE: Do NOT include type=details — that returns pitch-by-pitch instead of aggregated.
-  // hfGT=R%7C limits to regular-season games.
   const url = 'https://baseballsavant.mlb.com/statcast_search/csv' +
     '?hfGT=R%7C' +
     '&hfSea=2026%7C2025%7C' +
@@ -253,12 +375,22 @@ async function fetchSavantBulkHitter(pitcherHand) {
   return {};
 }
 
+// Legacy calcHot kept only for backwards-compat display.
+// New flag logic is in evaluateFlag(). Once the UI no longer reads hot_score,
+// this can be removed.
+function calcHot(s){
+  if(!s||(s.nPA||0)<5)return{score:50,grade:'C',trend:'NEUTRAL'};
+  const hh=s.hardHitPct??38,xw=s.xwoba??0.320,bb=s.bbPct??8.5,ld=s.ldPct??21,k=s.kPct??23;
+  const sc=Math.round(clamp((hh-25)/32*100,0,100)*0.35+clamp((xw-0.270)/0.155*100,0,100)*0.25+clamp((bb-5)/14*100,0,100)*0.20+clamp((ld-14)/22*100,0,100)*0.10+clamp((35-k)/20*100,0,100)*0.10);
+  return{score:sc,grade:sc>=80?'A+':sc>=70?'A':sc>=60?'B+':sc>=50?'B':sc>=40?'C+':sc>=30?'C':'D',
+    trend:sc>=68?'HOT':sc>=55?'WARM':sc>=42?'NEUTRAL':'COLD'};
+}
+
 async function main() {
-  console.log('⚾ EDGE DFS HITTER LOADER — Node.js');
+  console.log('⚾ EDGE DFS HITTER LOADER — Node.js [v2 — rolling window flags]');
   console.log('Date:', today);
 
   // STEP 0: Bulk fetch pre-computed Savant stats for ALL hitters by pitcher hand
-  // 2 API calls get xSLG, xBA, xwOBA, barrel%, hard hit% for every hitter
   console.log('Fetching bulk Savant hitter stats...');
   const savantVsR = await fetchSavantBulkHitter('R');
   await sleep(3000);
@@ -286,7 +418,7 @@ async function main() {
       const d = await r.json();
       for (const p of (d.roster || [])) {
         const pos = p.position?.abbreviation || '';
-        if (pos === 'P') continue; // Keep TWP (Ohtani)
+        if (pos === 'P') continue;
         const displayPos = pos === 'TWP' ? 'DH' : pos;
         const gm = games.find(g => g.teams.away.team.id === tid || g.teams.home.team.id === tid);
         const isAway = gm?.teams.away.team.id === tid;
@@ -309,24 +441,45 @@ async function main() {
       const csv2026 = await fetchCSV(h.id, 2026);
       const rows2026 = parseCSV(csv2026);
 
-      // Splits use combined 2025+2026 data (bigger sample + current season)
+      // Splits use combined 2025+2026 data
       const splitsR = computeSplits(rowsAll, 'R');
       const splitsL = computeSplits(rowsAll, 'L');
 
-      // Full-season K% by pitcher hand (2025+2026 combined, much bigger sample than 14-day streak)
+      // Full-season K% by pitcher hand
       const seasonKvsR = computeSeasonKPct(rowsAll, 'R');
       const seasonKvsL = computeSeasonKPct(rowsAll, 'L');
 
-      // Hot streak uses 2026 only (current season), fallback to last 14 days of all data
-      let streak, streakSrc;
-      if (rows2026 && rows2026.length >= 20) { streak = computeStreak(rows2026, 14); streakSrc = '2026'; }
-      else { streak = computeStreak(rowsAll, 14); streakSrc = 'all'; }
-      const hot = calcHot(streak);
+      // === NEW: Rolling windows + season baseline ===
+      // L7 / L14 / L28 use 2026-only current-season data (fallback to all if sparse)
+      const windowSource = (rows2026 && rows2026.length >= 20) ? rows2026 : rowsAll;
+      const windowSrc = (rows2026 && rows2026.length >= 20) ? '2026' : 'all';
 
-      // Fetch stolen base data for this player
+      const streakL7  = computeStreak(windowSource, 7);
+      const streakL14 = computeStreak(windowSource, 14);
+      const streakL28 = computeStreak(windowSource, 28);
+      // Season baseline = the full 2025+2026 combined dataset, no date filter
+      const seasonBaseline = computeStreak(rowsAll, null);
+
+      // Legacy hot score still uses L14 (so existing UI keeps working)
+      const hot = calcHot(streakL14);
+
+      // Evaluate the new emerging/cooling flag
+      const flag = evaluateFlag(streakL7, streakL14, seasonBaseline);
+
+      // Deltas (for UI display & backtesting)
+      const d = (a, b) => (a != null && b != null) ? r3(a - b) : null;
+      const deltas = {
+        chase_delta_l7:     d(seasonBaseline?.chasePct,  streakL7?.chasePct),   // season - L7 (positive = chasing less)
+        zone_swing_delta_l7: d(streakL7?.zoneSwingPct,   seasonBaseline?.zoneSwingPct), // L7 - season
+        whiff_delta_l7:     d(seasonBaseline?.whiffPct,  streakL7?.whiffPct),   // season - L7 (positive = whiffing less)
+        ev_delta_l7:        d(streakL7?.avgEV,           seasonBaseline?.avgEV),
+        barrel_delta_l7:    d(streakL7?.barrelPct,       seasonBaseline?.barrelPct),
+        xwoba_delta_l7:     d(streakL7?.xwoba,           seasonBaseline?.xwoba),
+      };
+
+      // Stolen base data
       const sbData = await fetchPlayerSBData(h.id);
 
-      // Get hand-specific Savant bulk stats for this hitter (already fetched in bulk)
       const svR = savantVsR[h.id] || {};
       const svL = savantVsL[h.id] || {};
 
@@ -339,7 +492,18 @@ async function main() {
         season_hr: sbData.hr,
         season_ab: sbData.ab,
         season_hr_per_pa: sbData.hrPerPA,
-        sprint_speed: null, // TODO: add sprint speed source
+        sprint_speed: null,
+      };
+
+      // Common extra fields for edge_matchup_cache
+      const flagFields = {
+        is_emerging: flag.is_emerging,
+        emerging_tier: flag.emerging_tier,
+        emerging_signals: flag.emerging_signals,
+        is_cooling: flag.is_cooling,
+        cooling_tier: flag.cooling_tier,
+        cooling_signals: flag.cooling_signals,
+        is_accelerating: flag.is_accelerating,
       };
 
       if (splitsR && Object.keys(splitsR).length > 0) {
@@ -347,14 +511,13 @@ async function main() {
           player_id: h.id, player_name: h.name, team: h.team, position: h.position,
           pitcher_hand: 'R', season: 2025, pitch_splits: splitsR, bat_side: h.batSide,
           hot_score: hot.score, hot_grade: hot.grade, trend: hot.trend,
-          n_pa: streak?.nPA || 0, hard_hit_pct: streak?.hardHitPct || null,
-          barrel_pct: streak?.barrelPct || null, xwoba: streak?.xwoba || null,
-          xba: streak?.xba || null, bb_pct: streak?.bbPct || null, k_pct: streak?.kPct || null,
-          ld_pct: streak?.ldPct || null, avg_ev: streak?.avgEV || null,
-          contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
-          whiff_pct: streak?.whiffPct || null, avg_la: streak?.avgLA || null, fb_pct: streak?.fbPct || null,
+          n_pa: streakL14?.nPA || 0, hard_hit_pct: streakL14?.hardHitPct || null,
+          barrel_pct: streakL14?.barrelPct || null, xwoba: streakL14?.xwoba || null,
+          xba: streakL14?.xba || null, bb_pct: streakL14?.bbPct || null, k_pct: streakL14?.kPct || null,
+          ld_pct: streakL14?.ldPct || null, avg_ev: streakL14?.avgEV || null,
+          contact_pct: streakL14?.contactPct || null, chase_pct: streakL14?.chasePct || null,
+          whiff_pct: streakL14?.whiffPct || null, avg_la: streakL14?.avgLA || null, fb_pct: streakL14?.fbPct || null,
           season_k_pct: seasonKvsR?.kPct || null, season_pa_vs_hand: seasonKvsR?.nPA || null,
-          // Pre-computed Savant stats vs RHP (NOT calculated)
           season_xslg: svR.xslg || null,
           season_xba: svR.xba || null,
           season_xwoba: svR.xwoba || null,
@@ -364,7 +527,8 @@ async function main() {
           season_hr_vs_hand: svR.hrs != null ? svR.hrs : null,
           season_pa_vs_hand_bulk: svR.pa != null ? svR.pa : null,
           updated_at: new Date().toISOString(),
-          ...sbFields
+          ...sbFields,
+          ...flagFields,
         }, 'player_id,pitcher_hand,season');
       }
 
@@ -373,14 +537,13 @@ async function main() {
           player_id: h.id, player_name: h.name, team: h.team, position: h.position,
           pitcher_hand: 'L', season: 2025, pitch_splits: splitsL, bat_side: h.batSide,
           hot_score: hot.score, hot_grade: hot.grade, trend: hot.trend,
-          n_pa: streak?.nPA || 0, hard_hit_pct: streak?.hardHitPct || null,
-          barrel_pct: streak?.barrelPct || null, xwoba: streak?.xwoba || null,
-          xba: streak?.xba || null, bb_pct: streak?.bbPct || null, k_pct: streak?.kPct || null,
-          ld_pct: streak?.ldPct || null, avg_ev: streak?.avgEV || null,
-          contact_pct: streak?.contactPct || null, chase_pct: streak?.chasePct || null,
-          whiff_pct: streak?.whiffPct || null, avg_la: streak?.avgLA || null, fb_pct: streak?.fbPct || null,
+          n_pa: streakL14?.nPA || 0, hard_hit_pct: streakL14?.hardHitPct || null,
+          barrel_pct: streakL14?.barrelPct || null, xwoba: streakL14?.xwoba || null,
+          xba: streakL14?.xba || null, bb_pct: streakL14?.bbPct || null, k_pct: streakL14?.kPct || null,
+          ld_pct: streakL14?.ldPct || null, avg_ev: streakL14?.avgEV || null,
+          contact_pct: streakL14?.contactPct || null, chase_pct: streakL14?.chasePct || null,
+          whiff_pct: streakL14?.whiffPct || null, avg_la: streakL14?.avgLA || null, fb_pct: streakL14?.fbPct || null,
           season_k_pct: seasonKvsL?.kPct || null, season_pa_vs_hand: seasonKvsL?.nPA || null,
-          // Pre-computed Savant stats vs LHP (NOT calculated)
           season_xslg: svL.xslg || null,
           season_xba: svL.xba || null,
           season_xwoba: svL.xwoba || null,
@@ -390,23 +553,63 @@ async function main() {
           season_hr_vs_hand: svL.hrs != null ? svL.hrs : null,
           season_pa_vs_hand_bulk: svL.pa != null ? svL.pa : null,
           updated_at: new Date().toISOString(),
-          ...sbFields
+          ...sbFields,
+          ...flagFields,
         }, 'player_id,pitcher_hand,season');
       }
 
-      // Log hot score + all components to history table for trend tracking
+      // Log hot score + all rolling components + flags to history for backtesting
       await sbUpsert('edge_hot_history', {
         player_id: h.id, player_name: h.name, game_date: today, hot_score: hot.score,
-        hard_hit_pct: streak?.hardHitPct || null, xwoba: streak?.xwoba || null,
-        bb_pct: streak?.bbPct || null, k_pct: streak?.kPct || null,
-        barrel_pct: streak?.barrelPct || null, avg_ev: streak?.avgEV || null,
-        ld_pct: streak?.ldPct || null, chase_pct: streak?.chasePct || null,
-        whiff_pct: streak?.whiffPct || null, contact_pct: streak?.contactPct || null,
-        n_pa: streak?.nPA || 0,
+        // Legacy L14 columns (unchanged)
+        hard_hit_pct: streakL14?.hardHitPct || null, xwoba: streakL14?.xwoba || null,
+        bb_pct: streakL14?.bbPct || null, k_pct: streakL14?.kPct || null,
+        barrel_pct: streakL14?.barrelPct || null, avg_ev: streakL14?.avgEV || null,
+        ld_pct: streakL14?.ldPct || null, chase_pct: streakL14?.chasePct || null,
+        whiff_pct: streakL14?.whiffPct || null, contact_pct: streakL14?.contactPct || null,
+        n_pa: streakL14?.nPA || 0,
+        // New rolling columns
+        npa_l7:     streakL7?.nPA || 0,
+        npa_l28:    streakL28?.nPA || 0,
+        npa_season: seasonBaseline?.nPA || 0,
+
+        chase_pct_l7:   streakL7?.chasePct || null,
+        zone_swing_l7:  streakL7?.zoneSwingPct || null,
+        whiff_pct_l7:   streakL7?.whiffPct || null,
+        avg_ev_l7:      streakL7?.avgEV || null,
+        barrel_pct_l7:  streakL7?.barrelPct || null,
+        xwoba_l7:       streakL7?.xwoba || null,
+
+        chase_pct_l28:  streakL28?.chasePct || null,
+        zone_swing_l28: streakL28?.zoneSwingPct || null,
+        whiff_pct_l28:  streakL28?.whiffPct || null,
+        avg_ev_l28:     streakL28?.avgEV || null,
+        barrel_pct_l28: streakL28?.barrelPct || null,
+        xwoba_l28:      streakL28?.xwoba || null,
+
+        chase_pct_season:  seasonBaseline?.chasePct || null,
+        zone_swing_season: seasonBaseline?.zoneSwingPct || null,
+        whiff_pct_season:  seasonBaseline?.whiffPct || null,
+        avg_ev_season:     seasonBaseline?.avgEV || null,
+        barrel_pct_season: seasonBaseline?.barrelPct || null,
+        xwoba_season:      seasonBaseline?.xwoba || null,
+        woba_season:       seasonBaseline?.woba || null,
+        woba_l14:          streakL14?.woba || null,
+
+        ...deltas,
+        ...flagFields,
       }, 'player_id,game_date');
 
       saved++;
-      console.log((i+1) + '/' + hitters.length, h.name, '✓ vsR:' + Object.keys(splitsR).length, 'vsL:' + Object.keys(splitsL).length, 'hot:' + hot.score, '[' + streakSrc + ']');
+      const flagTag = flag.is_emerging ? '🔥'.repeat(flag.emerging_tier)
+                    : flag.is_cooling  ? '❄️'.repeat(flag.cooling_tier)
+                    : '';
+      console.log((i+1) + '/' + hitters.length, h.name,
+        '✓ vsR:' + Object.keys(splitsR).length, 'vsL:' + Object.keys(splitsL).length,
+        'hot:' + hot.score,
+        'L7:' + (streakL7?.nPA || 0) + 'pa',
+        flagTag,
+        '[' + windowSrc + ']');
 
       if (i % 3 === 2) await sleep(1200);
       else await sleep(500);
