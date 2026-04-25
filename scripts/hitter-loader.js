@@ -332,11 +332,32 @@ async function fetchSavantBulkHitter(pitcherHand) {
 
       const lines = text.trim().split('\n');
       if (lines.length < 2) return {};
-      const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+      // Strip BOM from first char if present, then parse headers
+      const headerLine = lines[0].charCodeAt(0) === 0xFEFF ? lines[0].slice(1) : lines[0];
+      const headers = headerLine.split(',').map(h => h.trim().replace(/"/g, ''));
 
       const results = {};
+
+      // Quote-aware CSV split — handles commas inside "quoted" fields like
+      // player names (e.g. "Alvarez, Yordan"). Naive split(',') was shifting
+      // all subsequent columns by 1, causing hardhit_percent to read bbdist
+      // values (e.g. 186) and other columns to be misaligned.
+      const splitCsv = (line) => {
+        const out = [];
+        let cur = '';
+        let inQ = false;
+        for (let j = 0; j < line.length; j++) {
+          const c = line[j];
+          if (c === '"') { inQ = !inQ; continue; }
+          if (c === ',' && !inQ) { out.push(cur); cur = ''; continue; }
+          cur += c;
+        }
+        out.push(cur);
+        return out.map(v => v.trim());
+      };
+
       for (let i = 1; i < lines.length; i++) {
-        const vals = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+        const vals = splitCsv(lines[i]);
         const row = {};
         headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
 
@@ -349,16 +370,20 @@ async function fetchSavantBulkHitter(pitcherHand) {
         // Savant sometimes returns garbage for partial-season / call-up players
         // (values like 3.838 or 1.74 were observed). Null-out anything outside range.
         const safeRate = (v) => (v != null && v >= 0 && v <= 1) ? v : null;
+        // Same defensive clamp for percentage stats (0-100 range).
+        // Yordan's row has been observed at hardhit_percent=186 and barrels_per_bbe_percent=53
+        // for tiny samples — null those out so we fall back to other signals.
+        const safePct = (v) => (v != null && v >= 0 && v <= 100) ? v : null;
 
         results[playerId] = {
           xslg: safeRate(pf('xslg')) != null ? r3(pf('xslg')) : null,
           xba: safeRate(pf('xba')) != null ? r3(pf('xba')) : null,
           xwoba: safeRate(pf('xwoba')) != null ? r3(pf('xwoba')) : null,
           xobp: safeRate(pf('xobp')) != null ? r3(pf('xobp')) : null,
-          barrelPct: pf('barrels_per_bbe_percent') != null ? r1(pf('barrels_per_bbe_percent')) : null,
-          hardHitPct: pf('hardhit_percent') != null ? r1(pf('hardhit_percent')) : null,
-          kPct: pf('k_percent') != null ? r1(pf('k_percent')) : null,
-          bbPct: pf('bb_percent') != null ? r1(pf('bb_percent')) : null,
+          barrelPct: safePct(pf('barrels_per_bbe_percent')) != null ? r1(pf('barrels_per_bbe_percent')) : null,
+          hardHitPct: safePct(pf('hardhit_percent')) != null ? r1(pf('hardhit_percent')) : null,
+          kPct: safePct(pf('k_percent')) != null ? r1(pf('k_percent')) : null,
+          bbPct: safePct(pf('bb_percent')) != null ? r1(pf('bb_percent')) : null,
           pa: pi('pa'),
           hrs: pi('hrs'),
           singles: pi('singles'),
