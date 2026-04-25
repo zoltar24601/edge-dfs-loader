@@ -599,6 +599,7 @@ async function main() {
         xwoba_season:      seasonBaseline?.xwoba || null,
         woba_season:       seasonBaseline?.woba || null,
         woba_l14:          streakL14?.woba || null,
+        zone_swing_l14:    streakL14?.zoneSwingPct || null,
 
         ...deltas,
         ...flagFields,
