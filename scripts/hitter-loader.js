@@ -366,24 +366,16 @@ async function fetchSavantBulkHitter(pitcherHand) {
 
         const pf = (field) => { const v = parseFloat(row[field]); return !isNaN(v) ? v : null; };
         const pi = (field) => { const v = parseInt(row[field]); return !isNaN(v) ? v : null; };
-        // Sanity guard: rate stats (xslg, xba, xwoba, xobp) must be in [0, 1].
-        // Savant sometimes returns garbage for partial-season / call-up players
-        // (values like 3.838 or 1.74 were observed). Null-out anything outside range.
-        const safeRate = (v) => (v != null && v >= 0 && v <= 1) ? v : null;
-        // Same defensive clamp for percentage stats (0-100 range).
-        // Yordan's row has been observed at hardhit_percent=186 and barrels_per_bbe_percent=53
-        // for tiny samples — null those out so we fall back to other signals.
-        const safePct = (v) => (v != null && v >= 0 && v <= 100) ? v : null;
 
         results[playerId] = {
-          xslg: safeRate(pf('xslg')) != null ? r3(pf('xslg')) : null,
-          xba: safeRate(pf('xba')) != null ? r3(pf('xba')) : null,
-          xwoba: safeRate(pf('xwoba')) != null ? r3(pf('xwoba')) : null,
-          xobp: safeRate(pf('xobp')) != null ? r3(pf('xobp')) : null,
-          barrelPct: safePct(pf('barrels_per_bbe_percent')) != null ? r1(pf('barrels_per_bbe_percent')) : null,
-          hardHitPct: safePct(pf('hardhit_percent')) != null ? r1(pf('hardhit_percent')) : null,
-          kPct: safePct(pf('k_percent')) != null ? r1(pf('k_percent')) : null,
-          bbPct: safePct(pf('bb_percent')) != null ? r1(pf('bb_percent')) : null,
+          xslg: pf('xslg') != null ? r3(pf('xslg')) : null,
+          xba: pf('xba') != null ? r3(pf('xba')) : null,
+          xwoba: pf('xwoba') != null ? r3(pf('xwoba')) : null,
+          xobp: pf('xobp') != null ? r3(pf('xobp')) : null,
+          barrelPct: pf('barrels_per_bbe_percent') != null ? r1(pf('barrels_per_bbe_percent')) : null,
+          hardHitPct: pf('hardhit_percent') != null ? r1(pf('hardhit_percent')) : null,
+          kPct: pf('k_percent') != null ? r1(pf('k_percent')) : null,
+          bbPct: pf('bb_percent') != null ? r1(pf('bb_percent')) : null,
           pa: pi('pa'),
           hrs: pi('hrs'),
           singles: pi('singles'),
