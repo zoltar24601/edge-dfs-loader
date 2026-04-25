@@ -49,11 +49,31 @@ async function fetchSavantBulk(playerType, batterHand) {
 
       const lines = text.trim().split('\n');
       if (lines.length < 2) return {};
-      const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+      // Strip UTF-8 BOM if present
+      const headerLine = lines[0].charCodeAt(0) === 0xFEFF ? lines[0].slice(1) : lines[0];
+      const headers = headerLine.split(',').map(h => h.trim().replace(/"/g, ''));
+
+      // Quote-aware CSV split — handles commas inside "quoted" fields like
+      // player names (e.g. "McCullers Jr., Lance"). Naive split(',') was
+      // shifting all subsequent columns by 1, causing every stat field to
+      // read from the wrong column.
+      const splitCsv = (line) => {
+        const out = [];
+        let cur = '';
+        let inQ = false;
+        for (let j = 0; j < line.length; j++) {
+          const c = line[j];
+          if (c === '"') { inQ = !inQ; continue; }
+          if (c === ',' && !inQ) { out.push(cur); cur = ''; continue; }
+          cur += c;
+        }
+        out.push(cur);
+        return out.map(v => v.trim());
+      };
 
       const results = {};
       for (let i = 1; i < lines.length; i++) {
-        const vals = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+        const vals = splitCsv(lines[i]);
         const row = {};
         headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
 
@@ -238,20 +258,63 @@ async function main() {
   for (let i = 0; i < pitchers.length; i++) {
     const p = pitchers[i];
     try {
-      // Arsenal still needs pitch-by-pitch (pitch mix, velocity by type)
-      const csv = await fetchCSV(p.id, '2025%7C2026');
-      const rows = parseCSV(csv);
-      
-      let arsenalAll = null, arsenalVsR = null, arsenalVsL = null;
-      if (rows && rows.length >= 100) {
-        arsenalAll = computeArsenalByHand(rows, null);
-        arsenalVsR = computeArsenalByHand(rows, 'R');
-        arsenalVsL = computeArsenalByHand(rows, 'L');
+      // Pull both combined (2025+2026) and 2026-only pitch-by-pitch data.
+      // Combined: stable arsenal effectiveness with bigger sample.
+      // 2026-only: current arsenal usage (catches in-season pitch-mix changes).
+      const csvCombined = await fetchCSV(p.id, '2025%7C2026');
+      const rowsCombined = parseCSV(csvCombined);
+      await sleep(300);
+      const csv2026 = await fetchCSV(p.id, '2026');
+      const rows2026 = parseCSV(csv2026);
+
+      // Pull 2025-only too — needed for arsenal-change detection. We don't
+      // strictly NEED a separate fetch; we can derive 2025 by subtracting
+      // 2026 from combined, but a clean separate pull is simpler and doesn't
+      // require the row-counts to match.
+      await sleep(300);
+      const csv2025 = await fetchCSV(p.id, '2025');
+      const rows2025 = parseCSV(csv2025);
+
+      // Compute arsenals from combined (default fallback).
+      let arsenalAll = null, arsenalCombinedVsR = null, arsenalCombinedVsL = null;
+      if (rowsCombined && rowsCombined.length >= 100) {
+        arsenalAll = computeArsenalByHand(rowsCombined, null);
+        arsenalCombinedVsR = computeArsenalByHand(rowsCombined, 'R');
+        arsenalCombinedVsL = computeArsenalByHand(rowsCombined, 'L');
       }
-      
+
+      // Compute 2026-only arsenals — these win when the sample is sufficient.
+      let arsenal2026VsR = null, arsenal2026VsL = null;
+      let pitchCount2026VsR = 0, pitchCount2026VsL = 0;
+      if (rows2026 && rows2026.length >= 50) {
+        pitchCount2026VsR = rows2026.filter(r => r.stand === 'R').length;
+        pitchCount2026VsL = rows2026.filter(r => r.stand === 'L').length;
+        arsenal2026VsR = computeArsenalByHand(rows2026, 'R');
+        arsenal2026VsL = computeArsenalByHand(rows2026, 'L');
+      }
+
+      // Compute 2025-only arsenals — used only for change-detection display.
+      let arsenal2025VsR = null, arsenal2025VsL = null;
+      if (rows2025 && rows2025.length >= 50) {
+        arsenal2025VsR = computeArsenalByHand(rows2025, 'R');
+        arsenal2025VsL = computeArsenalByHand(rows2025, 'L');
+      }
+
+      // Choose which arsenal to write to the primary `arsenal_vs_*` columns.
+      // If a pitcher has thrown 200+ pitches in 2026 vs that hand, use his
+      // 2026 arsenal — he's reshaped his approach this year. Otherwise use
+      // combined (more stable for relievers / early-season pitchers).
+      const ARSENAL_THRESHOLD = 200;
+      const arsenalVsR = (pitchCount2026VsR >= ARSENAL_THRESHOLD && arsenal2026VsR)
+        ? arsenal2026VsR : arsenalCombinedVsR;
+      const arsenalVsL = (pitchCount2026VsL >= ARSENAL_THRESHOLD && arsenal2026VsL)
+        ? arsenal2026VsL : arsenalCombinedVsL;
+      const arsenalSourceR = (pitchCount2026VsR >= ARSENAL_THRESHOLD && arsenal2026VsR) ? '2026' : 'combined';
+      const arsenalSourceL = (pitchCount2026VsL >= ARSENAL_THRESHOLD && arsenal2026VsL) ? '2026' : 'combined';
+
       const svR = savantVsR[p.id] || {};
       const svL = savantVsL[p.id] || {};
-      
+
       if (!arsenalAll && !svR.xwoba && !svL.xwoba) {
         console.log((i+1) + '/' + pitchers.length, p.name, '— skipped (no data)');
         continue;
@@ -265,6 +328,12 @@ async function main() {
       await sbUpsert('edge_pitcher_cache', {
         pitcher_id: p.id, pitcher_name: p.name, team: p.team, hand: p.hand, season: 2025,
         arsenal: arsenalAll, arsenal_vs_r: arsenalVsR, arsenal_vs_l: arsenalVsL,
+        // Per-season arsenals — used by frontend for arsenal-change detection
+        // ("McCullers cutter usage 8% → 43% vs LHB" insights).
+        arsenal_2025_vs_r: arsenal2025VsR,
+        arsenal_2025_vs_l: arsenal2025VsL,
+        arsenal_2026_vs_r: arsenal2026VsR,
+        arsenal_2026_vs_l: arsenal2026VsL,
         era: ext?.era != null ? r3(ext.era) : null,
         whip: ext?.whip != null ? r3(ext.whip) : null,
         k_per_9: ext?.kPer9 != null ? r1(ext.kPer9) : null,
@@ -294,7 +363,8 @@ async function main() {
       saved++;
       const splitR = svR.xwoba ? 'xwOBA:'+svR.xwoba+' xSLG:'+(svR.xslg||'?') : 'N/A';
       const splitL = svL.xwoba ? 'xwOBA:'+svL.xwoba+' xSLG:'+(svL.xslg||'?') : 'N/A';
-      console.log((i+1) + '/' + pitchers.length, p.name, '(' + p.team + ' ' + p.hand + 'HP) ✓ vsR:', splitR, '| vsL:', splitL);
+      const arsenalTag = '[arsR:' + arsenalSourceR + ' L:' + arsenalSourceL + ']';
+      console.log((i+1) + '/' + pitchers.length, p.name, '(' + p.team + ' ' + p.hand + 'HP) ✓', arsenalTag, 'vsR:', splitR, '| vsL:', splitL);
 
       if (i % 3 === 2) await sleep(1000);
       else await sleep(400);
