@@ -22,6 +22,69 @@ function r3(v){return Math.round(v*1000)/1000}
 function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v))}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 
+// ---- IL / inactive player status loader ----
+// Pulls full roster for all 30 teams, flags anyone whose status isn't Active.
+// Uses last_updated timestamp to clean up stale rows (players who came off IL).
+async function loadPlayerStatuses() {
+  console.log('---- Loading player statuses (IL/inactive) ----');
+  const runStart = new Date().toISOString();
+  let ilSaved = 0, ilErrors = 0;
+
+  // Fetch all 30 MLB teams
+  const teamsRes = await fetch(MLB + '/teams?sportId=1&season=2026');
+  const teamsData = await teamsRes.json();
+  const teams = (teamsData.teams || []).filter(t => t.sport?.id === 1);
+
+  for (let i = 0; i < teams.length; i++) {
+    const team = teams[i];
+    try {
+      const r = await fetch(MLB + '/teams/' + team.id + '/roster?rosterType=fullRoster&season=2026');
+      const d = await r.json();
+      const roster = d.roster || [];
+      // Anyone not Active: D7/D10/D15/D60 (IL), BRV, PL, RM, SU, etc.
+      const inactive = roster.filter(p => p.status?.code && p.status.code !== 'A');
+
+      for (const p of inactive) {
+        try {
+          await sbUpsert('edge_player_status', {
+            player_id: p.person.id,
+            player_name: p.person.fullName,
+            team_abbr: team.abbreviation,
+            status_code: p.status.code,
+            status_description: p.status.description,
+            last_updated: new Date().toISOString(),
+          }, 'player_id');
+          ilSaved++;
+        } catch (upErr) {
+          ilErrors++;
+          console.log('  upsert err', p.person.fullName, upErr.message?.substring(0, 60));
+        }
+      }
+
+      console.log((i+1) + '/' + teams.length, team.abbreviation, 'inactive:', inactive.length);
+      await sleep(300);
+    } catch (e) {
+      ilErrors++;
+      console.log(team.abbreviation, '✗', e.message?.substring(0, 80));
+    }
+  }
+
+  // Clean up rows not touched this run (player came off IL / activated)
+  try {
+    const delRes = await fetch(
+      SUPABASE_URL + '/rest/v1/edge_player_status?last_updated=lt.' + encodeURIComponent(runStart),
+      { method: 'DELETE',
+        headers: { 'Authorization': 'Bearer ' + SUPABASE_KEY, 'apikey': SUPABASE_KEY, 'Prefer': 'return=minimal' } }
+    );
+    if (delRes.ok) console.log('IL cleanup: stale rows removed');
+    else console.log('IL cleanup warn:', (await delRes.text()).substring(0, 80));
+  } catch (e) {
+    console.log('IL cleanup error:', e.message?.substring(0, 80));
+  }
+
+  console.log('Player status load complete: saved', ilSaved, 'errors', ilErrors);
+}
+
 // Fetch player's stolen base stats and sprint speed for current season
 async function fetchPlayerSBData(playerId) {
   try {
@@ -425,7 +488,12 @@ async function main() {
   const games = schedData.dates?.[0]?.games || [];
   console.log('Games:', games.length);
 
-  if (!games.length) { console.log('No games today'); return; }
+  if (!games.length) {
+    console.log('No games today');
+    // Still load IL statuses even if no slate today
+    await loadPlayerStatuses();
+    return;
+  }
 
   // 2. Rosters
   console.log('Fetching rosters...');
@@ -641,6 +709,9 @@ async function main() {
       console.log((i+1) + '/' + hitters.length, h.name, '✗', e.message?.substring(0, 80));
     }
   }
+
+  // Load IL/inactive player statuses for the entire league
+  await loadPlayerStatuses();
 
   console.log('========================================');
   console.log('DONE! Saved:', saved, '| Errors:', errors, '| Skipped:', skipped);
