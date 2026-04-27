@@ -503,7 +503,12 @@ async function main() {
 
   for (const tid of teamIds) {
     try {
-      const r = await fetch(MLB + '/teams/' + tid + '/roster?rosterType=active&hydrate=person');
+      // fullRoster (vs active) includes IL'd players. We want their splits
+      // cached so that if they're surprise-activated, projectHitterFP has
+      // real data to work with instead of generic fallbacks. The frontend
+      // separately tracks IL status from edge_player_status and zeroes out
+      // their projection until they're confirmed in a lineup.
+      const r = await fetch(MLB + '/teams/' + tid + '/roster?rosterType=fullRoster&hydrate=person');
       const d = await r.json();
       for (const p of (d.roster || [])) {
         const pos = p.position?.abbreviation || '';
