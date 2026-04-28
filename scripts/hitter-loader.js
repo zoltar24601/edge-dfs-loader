@@ -503,12 +503,14 @@ async function main() {
 
   for (const tid of teamIds) {
     try {
-      // fullRoster (vs active) includes IL'd players. We want their splits
-      // cached so that if they're surprise-activated, projectHitterFP has
-      // real data to work with instead of generic fallbacks. The frontend
-      // separately tracks IL status from edge_player_status and zeroes out
-      // their projection until they're confirmed in a lineup.
-      const r = await fetch(MLB + '/teams/' + tid + '/roster?rosterType=fullRoster&hydrate=person');
+      // 40Man (vs fullRoster) gives us active 26-man + 40-man depth + IL'd
+      // MLB players — everything DK actually rosters. fullRoster pulled in
+      // the entire minor league system (DSL, Rookie ball, etc.) which
+      // ballooned this loader from ~30min to 2.5hr because each minor leaguer
+      // still triggered Savant CSV fetches before getting skipped.
+      // The IL'd MLB players we care about (Springer, Langford, etc.) are
+      // on the 40-man so they're still included.
+      const r = await fetch(MLB + '/teams/' + tid + '/roster?rosterType=40Man&hydrate=person');
       const d = await r.json();
       for (const p of (d.roster || [])) {
         const pos = p.position?.abbreviation || '';
