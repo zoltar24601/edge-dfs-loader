@@ -87,6 +87,8 @@ function newAgg(pid, name, dateStr, hand, pt) {
     swings: 0, whiffs: 0, contacts: 0,
     xwoba_sum: 0, xwoba_n: 0, xba_sum: 0, xba_n: 0,
     oz_pitches: 0, chases: 0, zone_pitches: 0, zone_swings: 0,
+    singles: 0, doubles: 0, triples: 0, home_runs: 0, hbp: 0,
+    la_sum: 0, la_n: 0, fb_bip: 0, bip_typed: 0,
   };
 }
 
@@ -108,6 +110,11 @@ function aggregateDay(rows, dateStr) {
       a.pa_events++;
       if (ev === 'walk') a.walks++;
       if (ev === 'strikeout') a.strikeouts++;
+      if (ev === 'single') a.singles++;
+      if (ev === 'double') a.doubles++;
+      if (ev === 'triple') a.triples++;
+      if (ev === 'home_run') a.home_runs++;
+      if (ev === 'hit_by_pitch') a.hbp++;
     }
 
     const desc = r.description || '';
@@ -127,6 +134,11 @@ function aggregateDay(rows, dateStr) {
 
     if (r.type === 'X') {
       a.bip++;
+      const bt = r.bb_type || '';
+      if (bt && bt !== 'null') {
+        a.bip_typed++;
+        if (bt === 'fly_ball' || bt === 'popup') a.fb_bip++;
+      }
       const ls = parseFloat(r.launch_speed);
       if (!isNaN(ls)) {
         a.bip_ev++;
@@ -134,6 +146,8 @@ function aggregateDay(rows, dateStr) {
         if (ls >= 95) a.hard_hits++;
         const la = parseFloat(r.launch_angle);
         if (!isNaN(la)) {
+          a.la_sum += la;
+          a.la_n++;
           if (ls >= 98 && la >= 26 && la <= 30) a.barrels++;
           if (la >= 10 && la <= 25) a.liners++;
         }
@@ -149,6 +163,7 @@ function aggregateDay(rows, dateStr) {
   return Object.values(aggs).map(a => ({
     ...a,
     ev_sum: Math.round(a.ev_sum * 10) / 10,
+    la_sum: Math.round(a.la_sum * 10) / 10,
     xwoba_sum: Math.round(a.xwoba_sum * 1000) / 1000,
     xba_sum: Math.round(a.xba_sum * 1000) / 1000,
   }));
