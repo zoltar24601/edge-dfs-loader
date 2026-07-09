@@ -1,0 +1,29 @@
+name: Statcast Backfill (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Start date (YYYY-MM-DD)'
+        required: true
+      end_date:
+        description: 'End date (YYYY-MM-DD)'
+        required: true
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      START_DATE: ${{ github.event.inputs.start_date }}
+      END_DATE: ${{ github.event.inputs.end_date }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install node-fetch
+      - name: Run backfill
+        run: node scripts/statcast-backfill.js
