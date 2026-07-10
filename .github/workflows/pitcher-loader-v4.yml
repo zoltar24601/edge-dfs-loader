@@ -16,5 +16,19 @@ jobs:
         with:
           node-version: '20'
       - run: npm install node-fetch
+      - name: Snapshot edge_pitcher_cache (before)
+        run: OUT_FILE=pre_v4.json node scripts/dump-pitcher-cache.js
       - name: Run pitcher loader v4
         run: node scripts/pitcher-loader-v4.js
+      - name: Snapshot edge_pitcher_cache (after)
+        if: always()
+        run: OUT_FILE=post_v4.json node scripts/dump-pitcher-cache.js
+      - name: Upload snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pitcher-cache-comparison
+          path: |
+            pre_v4.json
+            post_v4.json
+          retention-days: 7
