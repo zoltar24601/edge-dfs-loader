@@ -13,7 +13,7 @@ GitHub Actions data pipeline feeding Supabase (project rklfzqqusainitumsvta) for
 - hitter-loader-v3.js - CURRENT hitter loader (incremental). Ingests missing dates into edge_statcast_daily (1 bulk Savant call per date, self-healing), then computes pitch splits (2025+2026), L7/L14/L28/season windows, hot score, emerging/cooling flags FROM the table. Writes edge_matchup_cache (vsR+vsL rows, conflict player_id,pitcher_hand,season) and edge_hot_history (conflict player_id,game_date). Runs ~10 min.
 - hitter-loader.js - RETIRED 90-minute per-player crawler. Kept as rollback only. Do not run on schedule.
 - statcast-backfill.js - date-range backfill for edge_statcast_daily (idempotent upserts; safe to re-run any range)
-- pitcher-loader.js - pitcher stats + arsenal into edge_pitcher_cache. KNOWN ISSUE: avg_ip_per_start divides total IP (incl. relief) by GS, inflating starters with relief outings (e.g. Manaea). A fixed version using last-8-starts game logs exists but is NOT yet deployed.
+- pitcher-loader.js - pitcher stats + arsenal into edge_pitcher_cache. avg_ip_per_start comes from the last 8 actual starts via game logs (fetchRecentStartIP); falls back to relief-adjusted season totals (minus ~1.3 IP per relief outing), null if relief outings exceed starts.
 - catcher-loader.js, results-backfill.js, clear-hitters.js, fangraphs-loader.py, park-factors-loader.js - supporting loaders
 
 ## Key table: edge_statcast_daily

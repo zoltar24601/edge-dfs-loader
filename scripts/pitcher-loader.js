@@ -173,6 +173,34 @@ async function fetchCSV(playerId, season) {
   return null;
 }
 
+// Average IP over the pitcher's most recent starts, relief outings excluded.
+// Season totals lump relief innings into the IP/GS division, which inflates
+// avg_ip_per_start for swingmen (e.g. Manaea); game logs count starts only.
+async function fetchRecentStartIP(pitcherId) {
+  const MAX_STARTS = 8, MIN_STARTS = 3;
+  try {
+    const startIPs = [];
+    for (const yr of [2026, 2025]) {
+      if (startIPs.length >= MAX_STARTS) break;
+      const r = await fetch(MLB + '/people/' + pitcherId + '/stats?stats=gameLog&season=' + yr + '&group=pitching');
+      const d = await r.json();
+      const splits = d.stats?.[0]?.splits || [];
+      const starts = splits
+        .filter(s => parseInt(s.stat?.gamesStarted || 0) >= 1)
+        .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      for (const s of starts) {
+        if (startIPs.length >= MAX_STARTS) break;
+        // inningsPitched is baseball notation: "6.1" = 6 innings + 1 out
+        const raw = parseFloat(s.stat.inningsPitched || 0);
+        const outs = Math.round((raw - Math.floor(raw)) * 10);
+        startIPs.push(Math.floor(raw) + outs / 3);
+      }
+    }
+    if (startIPs.length < MIN_STARTS) return null;
+    return startIPs.reduce((a, b) => a + b, 0) / startIPs.length;
+  } catch(e) { return null; }
+}
+
 async function fetchPitcherSeasonStats(pitcherId) {
   try {
     let sb = 0, cs = 0, ipTotal = 0, gs = 0, gp = 0, bf = 0;
@@ -213,9 +241,17 @@ async function fetchPitcherSeasonStats(pitcherId) {
     
     let avgIpPerStart = null, avgBfPerStart = null;
     if (gs >= 3) {
-      avgIpPerStart = ipTotal / gs;
+      // Primary: average of the last 8 actual starts from game logs.
+      avgIpPerStart = await fetchRecentStartIP(pitcherId);
+      if (avgIpPerStart == null) {
+        // Fallback: season-total estimate, with ~1.3 IP per relief outing
+        // (gp - gs) removed so relief innings don't inflate the average.
+        // If relief outings outnumber starts the estimate is too polluted; keep null.
+        const relief = gp - gs;
+        if (relief <= gs) avgIpPerStart = (ipTotal - 1.3 * relief) / gs;
+      }
       avgBfPerStart = bf / gs;
-      if (avgIpPerStart < 4.0 || avgIpPerStart > 8.0) avgIpPerStart = null;
+      if (avgIpPerStart != null && (avgIpPerStart < 4.0 || avgIpPerStart > 8.0)) avgIpPerStart = null;
       if (avgBfPerStart < 18 || avgBfPerStart > 30) avgBfPerStart = null;
     }
     return { sb, cs, ip: String(ipTotal), gs, gp, bf, hr, er, ks, bbs, hits,
