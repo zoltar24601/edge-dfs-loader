@@ -1,0 +1,20 @@
+name: Hitter Loader v3 (incremental)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install node-fetch
+      - name: Run incremental hitter loader
+        run: node scripts/hitter-loader-v3.js
