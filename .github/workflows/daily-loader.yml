@@ -1,10 +1,8 @@
 name: EDGE DFS Daily Loader
-
 on:
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
-
 jobs:
   load-data:
     runs-on: ubuntu-latest
@@ -14,20 +12,15 @@ jobs:
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
       - run: npm install node-fetch
-
       - name: Backfill results
         run: node scripts/results-backfill.js
-
       - name: Load hitter data
-        run: node scripts/hitter-loader.js
-
+        run: node scripts/hitter-loader-v3.js
       - name: Load pitcher data
         run: node scripts/pitcher-loader.js
-
       - name: Load catcher data
         run: node scripts/catcher-loader.js
