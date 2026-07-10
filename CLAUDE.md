@@ -2,6 +2,14 @@
 
 GitHub Actions data pipeline feeding Supabase (project rklfzqqusainitumsvta) for the Burning Edges MLB app.
 
+## Architecture rules (apply to every loader)
+- Counts, not averages: daily aggregate tables store raw COUNTS and SUMS only, so any window or split rebuilds exactly by summing rows. Averages/rates are computed at read time.
+- Bulk per date, never per player: backfills and daily ingest fetch ONE Savant CSV per DATE (all players at once). Per-player Savant crawls are what made the old loaders take 60-90 min.
+- Idempotent upserts: every Supabase write is an upsert with an explicit on_conflict target - any run, backfill, or chunk is safe to re-run.
+- Never kill the run: per-date and per-player failures are caught, logged, and skipped; the run continues and self-heals later.
+- Self-healing ingest: daily loaders find the max stored game_date and ingest from there through yesterday, so missed runs backfill themselves.
+- Verify before cutover: new loader versions run manually via workflow_dispatch and their output is compared against the current table before daily-loader.yml is switched.
+
 ## Workflows (.github/workflows/)
 - daily-loader.yml - scheduled 6am UTC daily: results-backfill -> hitter-loader-v3 -> pitcher-loader -> catcher-loader
 - hitter-loader-v3.yml - manual dispatch for the incremental hitter loader
@@ -13,11 +21,14 @@ GitHub Actions data pipeline feeding Supabase (project rklfzqqusainitumsvta) for
 - hitter-loader-v3.js - CURRENT hitter loader (incremental). Ingests missing dates into edge_statcast_daily (1 bulk Savant call per date, self-healing), then computes pitch splits (2025+2026), L7/L14/L28/season windows, hot score, emerging/cooling flags FROM the table. Writes edge_matchup_cache (vsR+vsL rows, conflict player_id,pitcher_hand,season) and edge_hot_history (conflict player_id,game_date). Runs ~10 min.
 - hitter-loader.js - RETIRED 90-minute per-player crawler. Kept as rollback only. Do not run on schedule.
 - statcast-backfill.js - date-range backfill for edge_statcast_daily (idempotent upserts; safe to re-run any range)
-- pitcher-loader.js - pitcher stats + arsenal into edge_pitcher_cache. avg_ip_per_start comes from the last 8 actual starts via game logs (fetchRecentStartIP); falls back to relief-adjusted season totals (minus ~1.3 IP per relief outing), null if relief outings exceed starts.
+- pitcher-loader.js - CURRENT pitcher loader (in daily-loader.yml). Pitcher stats + arsenal into edge_pitcher_cache, but crawls Savant per pitcher (~66 min). avg_ip_per_start comes from the last 8 actual starts via game logs (fetchRecentStartIP); falls back to relief-adjusted season totals (minus ~1.3 IP per relief outing), null if relief outings exceed starts.
+- pitcher-loader-v4.js - incremental rebuild of pitcher-loader.js on the edge_statcast_pitch_daily table (same pattern as hitter v3). Identical edge_pitcher_cache output shape. NOT yet in daily-loader.yml - verify against pitcher-loader.js output first, then cut over.
+- pitcher-statcast-backfill.js - date-range backfill for edge_statcast_pitch_daily (one bulk Savant CSV per date, all pitchers; idempotent; safe to re-run any range)
 - catcher-loader.js, results-backfill.js, clear-hitters.js, fangraphs-loader.py, park-factors-loader.js - supporting loaders
 
 ## Key table: edge_statcast_daily
 - One row per player + game_date + p_throws + pitch_type. Raw COUNTS and SUMS only (never averages) so any window rebuilds exactly by summing rows.
+- Pitcher twin: edge_statcast_pitch_daily - one row per pitcher + game_date + stand (batter side) + pitch_type, same counts/sums pattern plus velo_sum/velo_n. PO/IN/UNK pitch_type rows are stored on purpose (arsenal gates count raw pitches); exclude them from arsenal mix at compute time.
 - Backfilled 2025-03 through present, regular season only (hfGT=R). Old loader included spring/postseason in season PA; v3's regular-season-only baseline is intentional.
 - zone_swing columns come from this table (the old loader never populated zone_swing_l14).
 
