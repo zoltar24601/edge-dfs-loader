@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "if": "Bash(git *)",
+            "command": "grep -q commit && printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"Reminder: that was a git commit. If it changed backend/pipeline/pricing/loader behavior, add a PROJECT_LOG.md entry (and bump Last updated) before you finish.\"}}' || true"
+          }
+        ]
+      }
+    ]
+  }
+}
