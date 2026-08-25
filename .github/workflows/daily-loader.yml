@@ -16,6 +16,8 @@ jobs:
         with:
           node-version: '20'
       - run: npm install node-fetch
+      - name: Load player statuses (IL/inactive)
+        run: node scripts/status-loader.js
       - name: Backfill results
         run: node scripts/results-backfill.js
       - name: Load hitter data

@@ -11,7 +11,7 @@ GitHub Actions data pipeline feeding Supabase (project rklfzqqusainitumsvta) for
 - Verify before cutover: new loader versions run manually via workflow_dispatch and their output is compared against the current table before daily-loader.yml is switched.
 
 ## Workflows (.github/workflows/)
-- daily-loader.yml - scheduled 6am UTC daily: results-backfill -> hitter-loader-v3 -> pitcher-loader -> catcher-loader
+- daily-loader.yml - scheduled 6am UTC daily: status-loader -> results-backfill -> hitter-loader-v3 -> pitcher-loader-v4 -> catcher-loader
 - hitter-loader-v3.yml - manual dispatch for the incremental hitter loader
 - statcast-backfill.yml - manual dispatch, date-range inputs, backfills edge_statcast_daily
 - Secrets: SUPABASE_URL, SUPABASE_KEY (service role)
@@ -19,7 +19,8 @@ GitHub Actions data pipeline feeding Supabase (project rklfzqqusainitumsvta) for
 
 ## Scripts (root scripts/ folder - the nested .github/workflows/scripts/ copy is dead/duplicate)
 - hitter-loader-v3.js - CURRENT hitter loader (incremental). Ingests missing dates into edge_statcast_daily (1 bulk Savant call per date, self-healing), then computes pitch splits (2025+2026), L7/L14/L28/season windows, hot score, emerging/cooling flags FROM the table. Writes edge_matchup_cache (vsR+vsL rows, conflict player_id,pitcher_hand,season) and edge_hot_history (conflict player_id,game_date). Runs ~10 min.
-- hitter-loader.js - RETIRED 90-minute per-player crawler. Kept as rollback only. Do not run on schedule.
+- status-loader.js - edge_player_status (IL/inactive) loader. Pulls all 30 teams' fullRoster from statsapi, upserts anyone status.code != 'A', deletes rows not touched this run (activated players auto-clear -> absence from the table = Active). Extracted from the retired hitter-loader.js, which is why status FROZE 2026-07-09 at the v3 cutover until this was added to daily-loader.yml 2026-08-25.
+- hitter-loader.js - RETIRED 90-minute per-player crawler. Kept as rollback only. Do not run on schedule. (Its loadPlayerStatuses() now lives in status-loader.js.)
 - statcast-backfill.js - date-range backfill for edge_statcast_daily (idempotent upserts; safe to re-run any range)
 - pitcher-loader-v4.js - CURRENT pitcher loader (in daily-loader.yml since 2026-07-10; ~3 min vs old 66). Incremental on edge_statcast_pitch_daily, same pattern as hitter v3. Arsenals from the table (regular-season only, matching hitter convention); bulk Savant xwOBA/xSLG and statsapi season stats unchanged; avg_ip_per_start from last 8 actual starts via game logs (fetchRecentStartIP), falling back to relief-adjusted season totals, null if relief outings exceed starts. Writes edge_pitcher_cache (conflict pitcher_id,season).
 - pitcher-loader.js - RETIRED 66-minute per-pitcher Savant crawler. Kept as rollback only (single-line swap in daily-loader.yml). Note its arsenals included spring/postseason pitches; v4's regular-season-only baseline is intentional.
